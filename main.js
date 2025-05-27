@@ -338,30 +338,144 @@ const getProfilePosts = async (page, username, maxPosts) => {
     
     try {
         console.log(`Loading profile: ${profileUrl}`);
-        await page.goto(profileUrl, { waitUntil: 'networkidle', timeout: 30000 });
-        await page.waitForTimeout(3000);
+        await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
-        // Extract post and reel URLs
-        const contentUrls = await page.evaluate(() => {
+        // Wait for page to load
+        await page.waitForTimeout(5000);
+        
+        // Check what's actually on the page
+        const pageContent = await page.content();
+        console.log('Page loaded. Checking for content...');
+        
+        // Check for login wall
+        const loginWall = await page.$('input[name="username"], [role="button"]:has-text("Log in"), div:has-text("Log in")');
+        if (loginWall) {
+            console.log('Login wall detected. Attempting to continue...');
+        }
+        
+        // Check for profile content indicators
+        const hasProfile = await page.$('main, article, [role="main"]');
+        if (!hasProfile) {
+            console.log('No main content found. Page might be blocked.');
+            // Try to take a screenshot for debugging
+            try {
+                await page.screenshot({ path: 'debug-page.png', fullPage: false });
+                console.log('Debug screenshot saved');
+            } catch (e) {
+                console.log('Could not save screenshot');
+            }
+        }
+        
+        // Try multiple approaches to find content
+        console.log('Searching for post/reel links...');
+        
+        // Method 1: Look for post/reel links in href attributes
+        let contentUrls = await page.evaluate(() => {
             const links = [];
-            const anchors = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
             
-            for (const anchor of anchors) {
-                const href = anchor.getAttribute('href');
-                if (href && (href.includes('/p/') || href.includes('/reel/'))) {
-                    const fullUrl = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
-                    links.push(fullUrl);
+            // Try various selectors for post links
+            const selectors = [
+                'a[href*="/p/"]',
+                'a[href*="/reel/"]',
+                '[href*="/p/"]',
+                '[href*="/reel/"]'
+            ];
+            
+            for (const selector of selectors) {
+                const elements = document.querySelectorAll(selector);
+                console.log(`Found ${elements.length} elements with selector: ${selector}`);
+                
+                for (const element of elements) {
+                    const href = element.getAttribute('href');
+                    if (href) {
+                        const fullUrl = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+                        links.push(fullUrl);
+                        console.log(`Found link: ${fullUrl}`);
+                    }
                 }
             }
             
             return [...new Set(links)];
         });
         
-        console.log(`Found ${contentUrls.length} content URLs on profile`);
+        console.log(`Method 1 found ${contentUrls.length} URLs`);
+        
+        // Method 2: If no links found, try scrolling and searching again
+        if (contentUrls.length === 0) {
+            console.log('No links found initially. Trying scroll and search...');
+            
+            // Scroll down to load more content
+            for (let i = 0; i < 3; i++) {
+                await page.evaluate(() => window.scrollBy(0, 1000));
+                await page.waitForTimeout(2000);
+            }
+            
+            contentUrls = await page.evaluate(() => {
+                const links = [];
+                const allLinks = document.querySelectorAll('a');
+                
+                for (const link of allLinks) {
+                    const href = link.getAttribute('href');
+                    if (href && (href.includes('/p/') || href.includes('/reel/'))) {
+                        const fullUrl = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+                        links.push(fullUrl);
+                    }
+                }
+                
+                return [...new Set(links)];
+            });
+            
+            console.log(`Method 2 found ${contentUrls.length} URLs after scrolling`);
+        }
+        
+        // Method 3: Extract from page source if still no links
+        if (contentUrls.length === 0) {
+            console.log('Still no links. Searching page source...');
+            
+            const pageSource = await page.content();
+            const postMatches = pageSource.match(/\/(?:p|reel)\/[A-Za-z0-9_-]+/g);
+            
+            if (postMatches) {
+                contentUrls = [...new Set(postMatches.map(match => `https://www.instagram.com${match}/`))];
+                console.log(`Method 3 found ${contentUrls.length} URLs from page source`);
+            }
+        }
+        
+        // Debug: Log page info if still no content
+        if (contentUrls.length === 0) {
+            console.log('DEBUG: No content found. Page analysis:');
+            
+            const pageInfo = await page.evaluate(() => {
+                return {
+                    title: document.title,
+                    hasMain: !!document.querySelector('main'),
+                    hasArticle: !!document.querySelector('article'),
+                    linkCount: document.querySelectorAll('a').length,
+                    imageCount: document.querySelectorAll('img').length,
+                    bodyText: document.body.textContent.substring(0, 500)
+                };
+            });
+            
+            console.log('Page info:', pageInfo);
+        }
+        
+        console.log(`Final result: Found ${contentUrls.length} content URLs on profile`);
         return contentUrls.slice(0, maxPosts);
         
     } catch (error) {
         console.log(`Error loading profile ${username}:`, error.message);
+        
+        // Try to get some debug info even on error
+        try {
+            const currentUrl = await page.url();
+            console.log(`Current URL: ${currentUrl}`);
+            
+            const pageTitle = await page.title();
+            console.log(`Page title: ${pageTitle}`);
+        } catch (e) {
+            console.log('Could not get debug info');
+        }
+        
         return [];
     }
 };
