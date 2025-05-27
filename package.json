@@ -1,47 +1,41 @@
 {
-  "title": "Instagram Post Scraper Input",
-  "description": "Configuration for scraping Instagram posts with comprehensive data extraction",
-  "type": "object",
-  "schemaVersion": 1,
-  "properties": {
-    "usernames": {
-      "title": "Instagram Usernames",
-      "type": "array",
-      "description": "List of Instagram usernames to scrape posts from (without @ symbol)",
-      "prefill": ["natgeo", "nasa"],
-      "editor": "stringList"
-    },
-    "postUrls": {
-      "title": "Direct Post URLs", 
-      "type": "array",
-      "description": "List of direct Instagram post URLs to scrape",
-      "editor": "stringList"
-    },
-    "maxPostsPerProfile": {
-      "title": "Max Posts per Profile",
-      "type": "integer",
-      "description": "Maximum number of posts to scrape from each profile",
-      "default": 50
-    },
-    "includeComments": {
-      "title": "Include Comments",
-      "type": "boolean", 
-      "description": "Extract comments from each post",
-      "default": false
-    },
-    "maxCommentsPerPost": {
-      "title": "Max Comments per Post",
-      "type": "integer",
-      "description": "Maximum number of comments to extract per post",
-      "default": 10
-    },
-    "proxyConfiguration": {
-      "title": "Proxy Configuration",
-      "type": "object",
-      "description": "Proxy settings for the scraper",
-      "editor": "proxy",
-      "default": { "useApifyProxy": true }
-    }
+  "name": "instagram-post-scraper",
+  "version": "1.0.0",
+  "description": "Professional Instagram Post Scraper - Extract posts, comments, engagement metrics, hashtags, mentions, and media from Instagram profiles and individual posts",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "start": "node main.js",
+    "test": "node test.js"
   },
-  "required": []
+  "keywords": [
+    "instagram",
+    "scraper",
+    "posts",
+    "social-media",
+    "apify",
+    "crawler",
+    "data-extraction",
+    "engagement-metrics",
+    "hashtags",
+    "comments"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "apify": "^3.1.10",
+    "crawlee": "^3.5.8",
+    "playwright": "^1.40.0"
+  },
+  "devDependencies": {
+    "@apify/eslint-config": "^0.3.0",
+    "eslint": "^8.50.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/instagram-post-scraper.git"
+  }
 }
