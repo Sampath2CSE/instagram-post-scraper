@@ -107,7 +107,17 @@ const extractPostData = async (page, contentUrl) => {
                 }
             }
             
-            // Method 2: Try to find actual caption text elements (avoid engagement elements)
+            // Method 2: Clean caption from metadata and user info
+            if (caption) {
+                // Remove username and verification badges from caption
+                caption = caption.replace(/^[a-zA-Z0-9_.]+(?:Verified)?\s*\d+[wdhmy]\s*/i, '');
+                // Remove trailing metadata
+                caption = caption.replace(/\s*\d+[wdhmy]\s*$/, '');
+                // Remove "Contact Uploading & Non-Users" text
+                if (caption.includes('Contact Uploading & Non-Users')) {
+                    caption = '';
+                }
+            }
             if (!caption) {
                 const captionSelectors = [
                     'article div[data-testid="post-text"] span',
@@ -476,35 +486,52 @@ const extractPostData = async (page, contentUrl) => {
                     if (foundImages) break;
                 }
                 
-                // Method 2: DOM-based image extraction if script method failed
+                // Method 2: Try more aggressive DOM-based image extraction
                 if (!foundImages) {
-                    const imageSelectors = [
+                    const allImageSelectors = [
                         'article img[src*="scontent"]',
                         'article img[src*="cdninstagram"]', 
                         'div[role="button"] img[src*="scontent"]',
                         'main img[src*="scontent"]',
                         'img[style*="object-fit"][src*="scontent"]',
                         'article div img[src*="instagram"]',
-                        'img[src*="scontent"]:not([src*="s150x150"])',  // Exclude small thumbnails
-                        'img[src*="cdninstagram"]:not([src*="profile"])'
+                        'img[src*="scontent"]:not([src*="s150x150"])',
+                        'img[src*="cdninstagram"]:not([src*="profile"])',
+                        'img[srcset*="scontent"]',
+                        '[style*="background-image"][style*="scontent"]'
                     ];
                     
-                    for (const selector of imageSelectors) {
+                    for (const selector of allImageSelectors) {
                         const imgElements = document.querySelectorAll(selector);
                         for (const img of imgElements) {
-                            if (img.src && 
-                                (img.src.includes('scontent') || img.src.includes('cdninstagram')) &&
-                                !img.src.includes('profile') && 
-                                !img.src.includes('story') &&
-                                !img.src.includes('s150x150') && // Skip small thumbnails
-                                !img.src.includes('s240x240') && // Skip medium thumbnails
-                                (img.naturalWidth > 300 || img.width > 300)) { // Only get decent sized images
+                            let imgUrl = '';
+                            
+                            // Try different ways to get image URL
+                            if (img.src && (img.src.includes('scontent') || img.src.includes('cdninstagram'))) {
+                                imgUrl = img.src;
+                            } else if (img.srcset) {
+                                // Extract highest quality from srcset
+                                const srcsetUrls = img.srcset.split(',').map(s => s.trim().split(' ')[0]);
+                                imgUrl = srcsetUrls.find(url => url.includes('scontent') || url.includes('cdninstagram')) || '';
+                            } else if (img.style && img.style.backgroundImage) {
+                                const bgMatch = img.style.backgroundImage.match(/url\(['"]?([^'"]+)['"]?\)/);
+                                if (bgMatch && bgMatch[1]) {
+                                    imgUrl = bgMatch[1];
+                                }
+                            }
+                            
+                            if (imgUrl && 
+                                !imgUrl.includes('profile') && 
+                                !imgUrl.includes('story') &&
+                                !imgUrl.includes('s150x150') && 
+                                !imgUrl.includes('s240x240') &&
+                                (img.naturalWidth > 300 || img.width > 300 || imgUrl.includes('1080'))) {
                                 
                                 images.push({
-                                    url: img.src,
+                                    url: imgUrl,
                                     alt: img.alt || '',
-                                    width: img.naturalWidth || img.width,
-                                    height: img.naturalHeight || img.height,
+                                    width: img.naturalWidth || img.width || 0,
+                                    height: img.naturalHeight || img.height || 0,
                                     source: 'dom'
                                 });
                                 foundImages = true;
