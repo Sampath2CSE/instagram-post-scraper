@@ -263,58 +263,128 @@ const extractPostData = async (page, postUrl) => {
                 if (videos.length > 0) break;
             }
             
-            // Extract view count for videos
+            // Extract view count for videos - improved detection
             let viewCount = 0;
             if (videos.length > 0) {
-                // Look for view count in various formats
-                const viewSelectors = [
-                    'span[aria-label*="views"]',
-                    'span[title*="views"]', 
-                    'div[aria-label*="views"]'
+                console.log('Looking for view count...');
+                
+                // Method 1: Look for view count in various text formats
+                const viewPatterns = [
+                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/gi,
+                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*visualizações/gi, // Portuguese
+                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*visualizzazioni/gi, // Italian  
+                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*vues/gi, // French
+                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*просмотров/gi, // Russian
                 ];
                 
-                for (const selector of viewSelectors) {
-                    const viewElement = document.querySelector(selector);
-                    if (viewElement) {
-                        const viewText = viewElement.getAttribute('aria-label') || 
-                                       viewElement.getAttribute('title') || 
-                                       viewElement.textContent;
-                        const viewMatch = viewText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/i);
-                        if (viewMatch) {
-                            let views = viewMatch[1].replace(/,/g, '');
+                const pageText = document.body.textContent || '';
+                console.log('Page text sample:', pageText.substring(0, 500));
+                
+                for (const pattern of viewPatterns) {
+                    const matches = pageText.match(pattern);
+                    if (matches && matches.length > 0) {
+                        console.log('Found view matches:', matches);
+                        const viewText = matches[0];
+                        const numberMatch = viewText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)/i);
+                        if (numberMatch) {
+                            let views = numberMatch[1].replace(/,/g, '');
+                            console.log('Extracted view number:', views);
+                            
                             // Convert K, M, B to numbers
                             if (views.includes('K')) {
-                                views = parseFloat(views) * 1000;
+                                viewCount = Math.floor(parseFloat(views) * 1000);
                             } else if (views.includes('M')) {
-                                views = parseFloat(views) * 1000000;
+                                viewCount = Math.floor(parseFloat(views) * 1000000);
                             } else if (views.includes('B')) {
-                                views = parseFloat(views) * 1000000000;
+                                viewCount = Math.floor(parseFloat(views) * 1000000000);
                             } else {
-                                views = parseInt(views);
+                                viewCount = parseInt(views) || 0;
                             }
-                            viewCount = views;
-                            break;
+                            
+                            if (viewCount > 0) {
+                                console.log('Final view count:', viewCount);
+                                break;
+                            }
                         }
                     }
                 }
                 
-                // Alternative: search in page text for view count
+                // Method 2: Look in specific DOM elements
                 if (viewCount === 0) {
-                    const pageText = document.body.textContent || '';
-                    const viewMatches = pageText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/gi);
-                    if (viewMatches && viewMatches.length > 0) {
-                        let views = viewMatches[0].replace(/[^\d.KMB]/gi, '');
-                        if (views.includes('K')) {
-                            viewCount = parseFloat(views) * 1000;
-                        } else if (views.includes('M')) {
-                            viewCount = parseFloat(views) * 1000000;
-                        } else if (views.includes('B')) {
-                            viewCount = parseFloat(views) * 1000000000;
-                        } else {
-                            viewCount = parseInt(views.replace(/[^\d]/g, ''));
+                    const viewSelectors = [
+                        'span[aria-label*="view"]',
+                        'span[title*="view"]',
+                        'div[aria-label*="view"]',
+                        'span[aria-label*="Play"]',
+                        'div[role="button"] span',
+                        'article span',
+                        '[data-testid*="view"]'
+                    ];
+                    
+                    for (const selector of viewSelectors) {
+                        const elements = document.querySelectorAll(selector);
+                        for (const element of elements) {
+                            const text = (element.getAttribute('aria-label') || 
+                                         element.getAttribute('title') || 
+                                         element.textContent || '').toLowerCase();
+                            
+                            console.log('Checking element text:', text);
+                            
+                            if (text.includes('view') || text.includes('play')) {
+                                const viewMatch = text.match(/(\d+(?:,\d+)*(?:\.\d+)?[kmb]?)/i);
+                                if (viewMatch) {
+                                    let views = viewMatch[1].replace(/,/g, '');
+                                    if (views.includes('k')) {
+                                        viewCount = Math.floor(parseFloat(views) * 1000);
+                                    } else if (views.includes('m')) {
+                                        viewCount = Math.floor(parseFloat(views) * 1000000);
+                                    } else if (views.includes('b')) {
+                                        viewCount = Math.floor(parseFloat(views) * 1000000000);
+                                    } else {
+                                        viewCount = parseInt(views) || 0;
+                                    }
+                                    
+                                    if (viewCount > 0) {
+                                        console.log('Found view count in element:', viewCount);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (viewCount > 0) break;
+                    }
+                }
+                
+                // Method 3: Look in script tags for JSON data
+                if (viewCount === 0) {
+                    const scripts = document.querySelectorAll('script[type="application/ld+json"], script:not([type])');
+                    for (const script of scripts) {
+                        if (script.textContent) {
+                            const scriptText = script.textContent;
+                            
+                            // Look for view_count or similar in JSON
+                            const jsonPatterns = [
+                                /"view_count":\s*(\d+)/gi,
+                                /"views":\s*(\d+)/gi,
+                                /"play_count":\s*(\d+)/gi,
+                                /"video_view_count":\s*(\d+)/gi
+                            ];
+                            
+                            for (const pattern of jsonPatterns) {
+                                const match = scriptText.match(pattern);
+                                if (match && match[1]) {
+                                    viewCount = parseInt(match[1]);
+                                    console.log('Found view count in script:', viewCount);
+                                    break;
+                                }
+                            }
+                            
+                            if (viewCount > 0) break;
                         }
                     }
                 }
+                
+                console.log('Final view count result:', viewCount);
             }
             
             post.images = [...new Set(images.map(img => img.url))].map(url => {
