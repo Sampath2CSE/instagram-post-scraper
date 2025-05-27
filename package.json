@@ -1,41 +1,132 @@
 {
-  "name": "instagram-post-scraper",
-  "version": "1.0.0",
-  "description": "Professional Instagram Post Scraper - Extract posts, comments, engagement metrics, hashtags, mentions, and media from Instagram profiles and individual posts",
-  "main": "main.js",
-  "type": "module",
-  "scripts": {
-    "start": "node main.js",
-    "test": "node test.js"
-  },
-  "keywords": [
-    "instagram",
-    "scraper",
-    "posts",
-    "social-media",
-    "apify",
-    "crawler",
-    "data-extraction",
-    "engagement-metrics",
-    "hashtags",
-    "comments"
-  ],
-  "author": "Your Name",
-  "license": "MIT",
-  "dependencies": {
-    "apify": "^3.1.10",
-    "crawlee": "^3.5.8",
-    "playwright": "^1.40.0"
-  },
-  "devDependencies": {
-    "@apify/eslint-config": "^0.3.0",
-    "eslint": "^8.50.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/yourusername/instagram-post-scraper.git"
+  "title": "Instagram Post Scraper Input",
+  "description": "Configuration for scraping Instagram posts with comprehensive data extraction",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "usernames": {
+      "title": "Instagram Usernames",
+      "type": "array",
+      "description": "List of Instagram usernames to scrape posts from (without @ symbol)",
+      "prefill": ["natgeo", "nasa"],
+      "editor": "stringList",
+      "placeholderValue": "username1",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_.]+$"
+      }
+    },
+    "postUrls": {
+      "title": "Direct Post URLs",
+      "type": "array",
+      "description": "List of direct Instagram post URLs to scrape",
+      "editor": "stringList",
+      "placeholderValue": "https://www.instagram.com/p/ABC123/",
+      "items": {
+        "type": "string",
+        "pattern": "^https://www\\.instagram\\.com/p/[a-zA-Z0-9_-]+/?$"
+      }
+    },
+    "maxPostsPerProfile": {
+      "title": "Max Posts per Profile",
+      "type": "integer",
+      "description": "Maximum number of posts to scrape from each profile",
+      "default": 50,
+      "minimum": 1,
+      "maximum": 1000,
+      "unit": "posts"
+    },
+    "includeComments": {
+      "title": "Include Comments",
+      "type": "boolean",
+      "description": "Extract comments from each post",
+      "default": false,
+      "groupCaption": "Content Options",
+      "groupDescription": "Configure what data to extract from posts"
+    },
+    "maxCommentsPerPost": {
+      "title": "Max Comments per Post",
+      "type": "integer",
+      "description": "Maximum number of comments to extract per post (only if comments are enabled)",
+      "default": 10,
+      "minimum": 1,
+      "maximum": 100,
+      "unit": "comments"
+    },
+    "includeHashtags": {
+      "title": "Include Hashtags",
+      "type": "boolean",
+      "description": "Extract hashtags from post captions",
+      "default": true
+    },
+    "includeMentions": {
+      "title": "Include Mentions",
+      "type": "boolean",
+      "description": "Extract user mentions from post captions",
+      "default": true
+    },
+    "includeLocation": {
+      "title": "Include Location",
+      "type": "boolean",
+      "description": "Extract location information if available",
+      "default": true
+    },
+    "includeEngagementMetrics": {
+      "title": "Include Engagement Metrics",
+      "type": "boolean",
+      "description": "Extract likes and comments count",
+      "default": true
+    },
+    "dateFrom": {
+      "title": "Date From",
+      "type": "string",
+      "description": "Only scrape posts newer than this date (YYYY-MM-DD format)",
+      "editor": "textfield",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "groupCaption": "Date Filters",
+      "groupDescription": "Filter posts by date range"
+    },
+    "dateTo": {
+      "title": "Date To",
+      "type": "string",
+      "description": "Only scrape posts older than this date (YYYY-MM-DD format)",
+      "editor": "textfield",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Proxy settings for the scraper",
+      "prefill": { "useApifyProxy": true },
+      "default": { "useApifyProxy": true },
+      "editor": "proxy",
+      "groupCaption": "Advanced Options",
+      "groupDescription": "Technical configuration options"
+    },
+    "maxConcurrency": {
+      "title": "Max Concurrency",
+      "type": "integer",
+      "description": "Maximum number of parallel requests",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 50
+    },
+    "maxRequestRetries": {
+      "title": "Max Request Retries",
+      "type": "integer",
+      "description": "Maximum number of retries for failed requests",
+      "default": 3,
+      "minimum": 0,
+      "maximum": 10
+    },
+    "requestHandlerTimeoutSecs": {
+      "title": "Request Timeout",
+      "type": "integer",
+      "description": "Timeout for processing each request in seconds",
+      "default": 60,
+      "minimum": 30,
+      "maximum": 300,
+      "unit": "seconds"
+    }
   }
 }
