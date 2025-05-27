@@ -1,0 +1,70 @@
+{
+  "actorSpecification": 1,
+  "name": "instagram-post-scraper",
+  "title": "📷 Instagram Post Scraper",
+  "description": "Extract comprehensive data from Instagram posts including captions, hashtags, mentions, comments, engagement metrics, images, videos, and metadata. Scrape from usernames or direct post URLs with advanced filtering options.",
+  "version": "1.0.0",
+  "meta": {
+    "templateId": "js-crawlee-playwright-chrome"
+  },
+  "input": "./INPUT_SCHEMA.json",
+  "dockerfile": "./Dockerfile",
+  "readme": "./README.md",
+  "storages": {
+    "dataset": {
+      "actorSpecification": 1,
+      "title": "Instagram Posts",
+      "description": "Dataset containing scraped Instagram post data",
+      "views": {
+        "overview": {
+          "title": "Posts Overview",
+          "description": "Overview of scraped Instagram posts",
+          "transformation": {
+            "fields": [
+              "url",
+              "ownerUsername", 
+              "caption",
+              "type",
+              "timestamp",
+              "likesCount",
+              "commentsCount",
+              "hashtags",
+              "images"
+            ]
+          }
+        },
+        "engagement": {
+          "title": "Engagement Metrics",
+          "description": "Focus on engagement data",
+          "transformation": {
+            "fields": [
+              "url",
+              "ownerUsername",
+              "likesCount", 
+              "commentsCount",
+              "timestamp",
+              "hashtags"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "categories": [
+    "SOCIAL_MEDIA"
+  ],
+  "author": {
+    "name": "Your Name",
+    "email": "your.email@example.com"
+  },
+  "website": "https://github.com/yourusername/instagram-post-scraper",
+  "license": "MIT",
+  "environmentVariables": {},
+  "publishedInStore": false,
+  "pricing": {
+    "type": "PER_RESULT",
+    "unit": "RESULT",
+    "unitCoeff": 1000,
+    "displayName": "Results (1K)"
+  }
+}

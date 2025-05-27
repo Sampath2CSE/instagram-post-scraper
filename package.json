@@ -1,0 +1,41 @@
+{
+  "name": "instagram-post-scraper",
+  "version": "1.0.0",
+  "description": "Professional Instagram Post Scraper - Extract posts, comments, engagement metrics, hashtags, mentions, and media from Instagram profiles and individual posts",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "start": "node main.js",
+    "test": "node test.js"
+  },
+  "keywords": [
+    "instagram",
+    "scraper",
+    "posts",
+    "social-media",
+    "apify",
+    "crawler",
+    "data-extraction",
+    "engagement-metrics",
+    "hashtags",
+    "comments"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "apify": "^3.1.10",
+    "crawlee": "^3.5.8",
+    "playwright": "^1.40.0"
+  },
+  "devDependencies": {
+    "@apify/eslint-config": "^0.3.0",
+    "eslint": "^8.50.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/instagram-post-scraper.git"
+  }
+}
