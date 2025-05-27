@@ -38,8 +38,8 @@ const dataset = await Dataset.open();
 // Helper function to extract post data
 const extractPostData = async (page, postUrl) => {
     try {
-        // Wait for content to load
-        await page.waitForSelector('article', { timeout: 30000 });
+        // Wait for content to load with longer timeout
+        await page.waitForTimeout(5000);
         
         const postData = await page.evaluate((url) => {
             const post = {};
@@ -48,25 +48,55 @@ const extractPostData = async (page, postUrl) => {
             post.url = url;
             post.shortcode = url.split('/p/')[1]?.split('/')[0] || '';
             
-            // Try to find post content using various selectors
-            const captionSelectors = [
-                'article h1',
-                'article div[data-testid="post-text"]',
-                'article span[dir="auto"]',
-                'meta[property="og:description"]'
-            ];
-            
+            // Try multiple approaches to get caption
             let caption = '';
-            for (const selector of captionSelectors) {
-                const element = document.querySelector(selector);
-                if (element) {
-                    caption = selector === 'meta[property="og:description"]' 
-                        ? element.getAttribute('content') 
-                        : element.textContent;
-                    if (caption) break;
+            
+            // Method 1: Try meta description
+            const metaDesc = document.querySelector('meta[property="og:description"]');
+            if (metaDesc) {
+                caption = metaDesc.getAttribute('content') || '';
+            }
+            
+            // Method 2: Try various caption selectors
+            if (!caption) {
+                const captionSelectors = [
+                    'article div[data-testid="post-text"]',
+                    'article h1',
+                    'article span[dir="auto"]',
+                    'div[role="button"] span',
+                    'article div span',
+                    'main article span'
+                ];
+                
+                for (const selector of captionSelectors) {
+                    const element = document.querySelector(selector);
+                    if (element && element.textContent && element.textContent.trim().length > 10) {
+                        caption = element.textContent.trim();
+                        break;
+                    }
                 }
             }
-            post.caption = caption?.trim() || '';
+            
+            // Method 3: Search in page scripts for JSON data
+            if (!caption) {
+                const scripts = document.querySelectorAll('script');
+                for (const script of scripts) {
+                    if (script.textContent && script.textContent.includes('"caption"')) {
+                        try {
+                            // Try to extract caption from JSON data
+                            const matches = script.textContent.match(/"caption":\s*"([^"]+)"/);
+                            if (matches && matches[1]) {
+                                caption = matches[1];
+                                break;
+                            }
+                        } catch (e) {
+                            // Continue searching
+                        }
+                    }
+                }
+            }
+            
+            post.caption = caption;
             
             // Extract hashtags and mentions from caption
             if (caption) {
@@ -78,55 +108,90 @@ const extractPostData = async (page, postUrl) => {
             }
             
             // Get post owner information
-            const ownerLink = document.querySelector('article a[role="link"]');
-            if (ownerLink) {
-                const href = ownerLink.getAttribute('href');
-                post.ownerUsername = href?.replace('/', '') || '';
+            const ownerSelectors = [
+                'article a[role="link"]',
+                'header a',
+                'main article a'
+            ];
+            
+            for (const selector of ownerSelectors) {
+                const ownerLink = document.querySelector(selector);
+                if (ownerLink) {
+                    const href = ownerLink.getAttribute('href');
+                    if (href && href.startsWith('/') && !href.includes('/p/')) {
+                        post.ownerUsername = href.replace('/', '') || '';
+                        break;
+                    }
+                }
             }
             
-            // Try to extract engagement metrics
-            const likeButtons = document.querySelectorAll('button[aria-label*="like"], span[aria-label*="like"]');
-            const commentButtons = document.querySelectorAll('button[aria-label*="comment"], span[aria-label*="comment"]');
-            
-            // Extract like count
+            // Try to extract engagement metrics from various sources
             let likeCount = 0;
-            for (const btn of likeButtons) {
-                const ariaLabel = btn.getAttribute('aria-label');
-                const match = ariaLabel?.match(/(\d+(?:,\d+)*)\s*like/i);
-                if (match) {
-                    likeCount = parseInt(match[1].replace(/,/g, ''));
-                    break;
-                }
-            }
-            post.likesCount = likeCount;
-            
-            // Extract comment count
             let commentCount = 0;
-            for (const btn of commentButtons) {
-                const ariaLabel = btn.getAttribute('aria-label');
-                const match = ariaLabel?.match(/(\d+(?:,\d+)*)\s*comment/i);
-                if (match) {
-                    commentCount = parseInt(match[1].replace(/,/g, ''));
-                    break;
+            
+            // Method 1: Look for aria-labels
+            const buttons = document.querySelectorAll('button, span');
+            for (const btn of buttons) {
+                const ariaLabel = btn.getAttribute('aria-label') || '';
+                const text = btn.textContent || '';
+                
+                // Check for likes
+                if (ariaLabel.includes('like') || text.includes('like')) {
+                    const likeMatch = (ariaLabel + ' ' + text).match(/(\d+(?:,\d+)*)\s*like/i);
+                    if (likeMatch) {
+                        likeCount = parseInt(likeMatch[1].replace(/,/g, ''));
+                    }
+                }
+                
+                // Check for comments
+                if (ariaLabel.includes('comment') || text.includes('comment')) {
+                    const commentMatch = (ariaLabel + ' ' + text).match(/(\d+(?:,\d+)*)\s*comment/i);
+                    if (commentMatch) {
+                        commentCount = parseInt(commentMatch[1].replace(/,/g, ''));
+                    }
                 }
             }
+            
+            // Method 2: Look in page content for numbers
+            const pageText = document.body.textContent || '';
+            if (likeCount === 0) {
+                const likeMatches = pageText.match(/(\d+(?:,\d+)*)\s*likes?/gi);
+                if (likeMatches && likeMatches.length > 0) {
+                    likeCount = parseInt(likeMatches[0].replace(/[^\d]/g, ''));
+                }
+            }
+            
+            post.likesCount = likeCount;
             post.commentsCount = commentCount;
             
             // Extract media information
-            const images = Array.from(document.querySelectorAll('article img[src*="instagram.com"]'))
-                .map(img => ({
-                    url: img.src,
-                    alt: img.alt || ''
-                }));
+            const images = [];
+            const videos = [];
             
-            const videos = Array.from(document.querySelectorAll('article video'))
-                .map(video => ({
-                    url: video.src || video.querySelector('source')?.src,
-                    poster: video.poster
-                }));
+            // Get images
+            const imgElements = document.querySelectorAll('img[src*="instagram.com"], img[src*="cdninstagram.com"]');
+            for (const img of imgElements) {
+                if (img.src && img.src.includes('instagram') && !img.src.includes('profile')) {
+                    images.push({
+                        url: img.src,
+                        alt: img.alt || ''
+                    });
+                }
+            }
             
-            post.images = images;
-            post.videos = videos;
+            // Get videos
+            const videoElements = document.querySelectorAll('video');
+            for (const video of videoElements) {
+                if (video.src) {
+                    videos.push({
+                        url: video.src,
+                        poster: video.poster || ''
+                    });
+                }
+            }
+            
+            post.images = images.slice(0, 10); // Limit to 10 images
+            post.videos = videos.slice(0, 5);  // Limit to 5 videos
             
             // Determine post type
             if (videos.length > 0) {
@@ -138,24 +203,48 @@ const extractPostData = async (page, postUrl) => {
             }
             
             // Try to extract timestamp
-            const timeElement = document.querySelector('time[datetime]');
-            if (timeElement) {
-                post.timestamp = timeElement.getAttribute('datetime');
+            const timeElements = document.querySelectorAll('time[datetime], time[title]');
+            for (const timeEl of timeElements) {
+                const datetime = timeEl.getAttribute('datetime') || timeEl.getAttribute('title');
+                if (datetime) {
+                    post.timestamp = datetime;
+                    break;
+                }
             }
             
             // Extract location if available
-            const locationElement = document.querySelector('a[href*="/explore/locations/"]');
-            if (locationElement) {
-                post.locationName = locationElement.textContent?.trim();
-                const href = locationElement.getAttribute('href');
-                const locationId = href?.match(/\/explore\/locations\/(\d+)/)?.[1];
-                if (locationId) {
-                    post.locationId = locationId;
+            const locationSelectors = [
+                'a[href*="/explore/locations/"]',
+                'div[data-testid="location"]'
+            ];
+            
+            for (const selector of locationSelectors) {
+                const locationElement = document.querySelector(selector);
+                if (locationElement) {
+                    post.locationName = locationElement.textContent?.trim();
+                    const href = locationElement.getAttribute('href');
+                    if (href) {
+                        const locationId = href.match(/\/explore\/locations\/(\d+)/)?.[1];
+                        if (locationId) {
+                            post.locationId = locationId;
+                        }
+                    }
+                    break;
                 }
             }
             
             return post;
         }, postUrl);
+        
+        // Log what we found for debugging
+        console.log(`Extracted post data:`, {
+            url: postData.url,
+            caption: postData.caption ? `${postData.caption.substring(0, 50)}...` : 'No caption',
+            likesCount: postData.likesCount,
+            commentsCount: postData.commentsCount,
+            imagesCount: postData.images?.length || 0,
+            videosCount: postData.videos?.length || 0
+        });
         
         return postData;
     } catch (error) {
@@ -209,34 +298,105 @@ const getProfilePosts = async (page, username, maxPosts) => {
     
     try {
         await page.goto(profileUrl, { waitUntil: 'networkidle' });
-        await page.waitForSelector('main', { timeout: 30000 });
         
-        // Scroll to load more posts
+        // Wait for the page to load and try multiple selectors
+        await page.waitForTimeout(3000);
+        
+        // Modern Instagram uses different selectors - try multiple approaches
+        const postSelectors = [
+            'article a[href*="/p/"]',
+            'a[href*="/p/"][role="link"]',
+            'div[role="button"] a[href*="/p/"]',
+            'main a[href*="/p/"]'
+        ];
+        
         let postLinks = [];
-        let scrollAttempts = 0;
-        const maxScrollAttempts = 10;
         
-        while (postLinks.length < maxPosts && scrollAttempts < maxScrollAttempts) {
-            // Get current post links
-            const currentLinks = await page.$$eval(
-                'a[href*="/p/"]',
-                links => links.map(link => link.href).slice(0, Math.min(links.length, 50))
-            );
+        // Try each selector
+        for (const selector of postSelectors) {
+            try {
+                await page.waitForSelector(selector, { timeout: 5000 });
+                const links = await page.$eval(selector, elements => 
+                    elements.map(el => el.href).filter(href => href && href.includes('/p/'))
+                );
+                if (links.length > 0) {
+                    postLinks = [...new Set([...postLinks, ...links])];
+                    console.log(`Found ${links.length} posts using selector: ${selector}`);
+                    break;
+                }
+            } catch (e) {
+                console.log(`Selector ${selector} failed: ${e.message}`);
+                continue;
+            }
+        }
+        
+        // If no posts found with selectors, try scrolling and extracting from page content
+        if (postLinks.length === 0) {
+            console.log('No posts found with selectors, trying alternative method...');
             
-            postLinks = [...new Set([...postLinks, ...currentLinks])];
+            // Scroll to load content
+            for (let i = 0; i < 3; i++) {
+                await page.evaluate(() => window.scrollBy(0, 1000));
+                await page.waitForTimeout(2000);
+            }
             
-            if (postLinks.length >= maxPosts) break;
+            // Extract post URLs from page content
+            const pageContent = await page.content();
+            const postMatches = pageContent.match(/\/p\/[A-Za-z0-9_-]+/g);
+            if (postMatches) {
+                postLinks = [...new Set(postMatches.map(match => `https://www.instagram.com${match}/`))];
+                console.log(`Found ${postLinks.length} posts from page content`);
+            }
+        }
+        
+        // Additional scroll to load more posts if needed
+        if (postLinks.length > 0 && postLinks.length < maxPosts) {
+            let scrollAttempts = 0;
+            const maxScrollAttempts = 5;
             
-            // Scroll down to load more
-            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(2000);
-            scrollAttempts++;
+            while (postLinks.length < maxPosts && scrollAttempts < maxScrollAttempts) {
+                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+                await page.waitForTimeout(3000);
+                
+                // Try to get more links
+                for (const selector of postSelectors) {
+                    try {
+                        const newLinks = await page.$eval(selector, elements => 
+                            elements.map(el => el.href).filter(href => href && href.includes('/p/'))
+                        );
+                        postLinks = [...new Set([...postLinks, ...newLinks])];
+                    } catch (e) {
+                        // Continue to next selector
+                    }
+                }
+                
+                scrollAttempts++;
+            }
         }
         
         return postLinks.slice(0, maxPosts);
     } catch (error) {
         console.log(`Error getting posts from profile ${username}:`, error.message);
-        return [];
+        
+        // Try a direct approach with page evaluation
+        try {
+            const postLinks = await page.evaluate(() => {
+                const links = [];
+                const anchors = document.querySelectorAll('a');
+                anchors.forEach(anchor => {
+                    if (anchor.href && anchor.href.includes('/p/')) {
+                        links.push(anchor.href);
+                    }
+                });
+                return [...new Set(links)];
+            });
+            
+            console.log(`Fallback method found ${postLinks.length} posts`);
+            return postLinks.slice(0, maxPosts);
+        } catch (fallbackError) {
+            console.log('Fallback method also failed:', fallbackError.message);
+            return [];
+        }
     }
 };
 
