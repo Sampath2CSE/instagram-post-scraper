@@ -12,7 +12,7 @@
       "editor": "stringList"
     },
     "postUrls": {
-      "title": "Direct Post URLs",
+      "title": "Direct Post URLs", 
       "type": "array",
       "description": "List of direct Instagram post URLs to scrape",
       "editor": "stringList"
@@ -21,91 +21,26 @@
       "title": "Max Posts per Profile",
       "type": "integer",
       "description": "Maximum number of posts to scrape from each profile",
-      "default": 50,
-      "minimum": 1,
-      "maximum": 1000
+      "default": 50
     },
     "includeComments": {
       "title": "Include Comments",
-      "type": "boolean",
+      "type": "boolean", 
       "description": "Extract comments from each post",
       "default": false
     },
     "maxCommentsPerPost": {
       "title": "Max Comments per Post",
       "type": "integer",
-      "description": "Maximum number of comments to extract per post (only if comments are enabled)",
-      "default": 10,
-      "minimum": 1,
-      "maximum": 100
-    },
-    "includeHashtags": {
-      "title": "Include Hashtags",
-      "type": "boolean",
-      "description": "Extract hashtags from post captions",
-      "default": true
-    },
-    "includeMentions": {
-      "title": "Include Mentions",
-      "type": "boolean",
-      "description": "Extract user mentions from post captions",
-      "default": true
-    },
-    "includeLocation": {
-      "title": "Include Location",
-      "type": "boolean",
-      "description": "Extract location information if available",
-      "default": true
-    },
-    "includeEngagementMetrics": {
-      "title": "Include Engagement Metrics",
-      "type": "boolean",
-      "description": "Extract likes and comments count",
-      "default": true
-    },
-    "dateFrom": {
-      "title": "Date From",
-      "type": "string",
-      "description": "Only scrape posts newer than this date (YYYY-MM-DD format)",
-      "editor": "textfield"
-    },
-    "dateTo": {
-      "title": "Date To",
-      "type": "string",
-      "description": "Only scrape posts older than this date (YYYY-MM-DD format)",
-      "editor": "textfield"
+      "description": "Maximum number of comments to extract per post",
+      "default": 10
     },
     "proxyConfiguration": {
       "title": "Proxy Configuration",
       "type": "object",
       "description": "Proxy settings for the scraper",
-      "prefill": { "useApifyProxy": true },
-      "default": { "useApifyProxy": true },
-      "editor": "proxy"
-    },
-    "maxConcurrency": {
-      "title": "Max Concurrency",
-      "type": "integer",
-      "description": "Maximum number of parallel requests",
-      "default": 5,
-      "minimum": 1,
-      "maximum": 50
-    },
-    "maxRequestRetries": {
-      "title": "Max Request Retries",
-      "type": "integer",
-      "description": "Maximum number of retries for failed requests",
-      "default": 3,
-      "minimum": 0,
-      "maximum": 10
-    },
-    "requestHandlerTimeoutSecs": {
-      "title": "Request Timeout",
-      "type": "integer",
-      "description": "Timeout for processing each request in seconds",
-      "default": 60,
-      "minimum": 30,
-      "maximum": 300
+      "editor": "proxy",
+      "default": { "useApifyProxy": true }
     }
   },
   "required": []
