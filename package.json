@@ -9,23 +9,13 @@
       "type": "array",
       "description": "List of Instagram usernames to scrape posts from (without @ symbol)",
       "prefill": ["natgeo", "nasa"],
-      "editor": "stringList",
-      "placeholderValue": "username1",
-      "items": {
-        "type": "string",
-        "pattern": "^[a-zA-Z0-9_.]+$"
-      }
+      "editor": "stringList"
     },
     "postUrls": {
       "title": "Direct Post URLs",
       "type": "array",
       "description": "List of direct Instagram post URLs to scrape",
-      "editor": "stringList",
-      "placeholderValue": "https://www.instagram.com/p/ABC123/",
-      "items": {
-        "type": "string",
-        "pattern": "^https://www\\.instagram\\.com/p/[a-zA-Z0-9_-]+/?$"
-      }
+      "editor": "stringList"
     },
     "maxPostsPerProfile": {
       "title": "Max Posts per Profile",
@@ -33,16 +23,13 @@
       "description": "Maximum number of posts to scrape from each profile",
       "default": 50,
       "minimum": 1,
-      "maximum": 1000,
-      "unit": "posts"
+      "maximum": 1000
     },
     "includeComments": {
       "title": "Include Comments",
       "type": "boolean",
       "description": "Extract comments from each post",
-      "default": false,
-      "groupCaption": "Content Options",
-      "groupDescription": "Configure what data to extract from posts"
+      "default": false
     },
     "maxCommentsPerPost": {
       "title": "Max Comments per Post",
@@ -50,8 +37,7 @@
       "description": "Maximum number of comments to extract per post (only if comments are enabled)",
       "default": 10,
       "minimum": 1,
-      "maximum": 100,
-      "unit": "comments"
+      "maximum": 100
     },
     "includeHashtags": {
       "title": "Include Hashtags",
@@ -81,17 +67,13 @@
       "title": "Date From",
       "type": "string",
       "description": "Only scrape posts newer than this date (YYYY-MM-DD format)",
-      "editor": "textfield",
-      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-      "groupCaption": "Date Filters",
-      "groupDescription": "Filter posts by date range"
+      "editor": "textfield"
     },
     "dateTo": {
       "title": "Date To",
       "type": "string",
       "description": "Only scrape posts older than this date (YYYY-MM-DD format)",
-      "editor": "textfield",
-      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      "editor": "textfield"
     },
     "proxyConfiguration": {
       "title": "Proxy Configuration",
@@ -99,9 +81,7 @@
       "description": "Proxy settings for the scraper",
       "prefill": { "useApifyProxy": true },
       "default": { "useApifyProxy": true },
-      "editor": "proxy",
-      "groupCaption": "Advanced Options",
-      "groupDescription": "Technical configuration options"
+      "editor": "proxy"
     },
     "maxConcurrency": {
       "title": "Max Concurrency",
@@ -125,8 +105,8 @@
       "description": "Timeout for processing each request in seconds",
       "default": 60,
       "minimum": 30,
-      "maximum": 300,
-      "unit": "seconds"
+      "maximum": 300
     }
-  }
+  },
+  "required": []
 }
