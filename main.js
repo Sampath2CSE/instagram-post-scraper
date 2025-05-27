@@ -240,6 +240,9 @@ const getProfilePosts = async (page, username, maxPosts) => {
     }
 };
 
+// Create proxy configuration
+const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration);
+
 // Main crawler configuration
 const crawler = new PlaywrightCrawler({
     launchContext: {
@@ -255,7 +258,7 @@ const crawler = new PlaywrightCrawler({
             ]
         }
     },
-    proxyConfiguration,
+    proxyConfiguration: proxyConfig,
     maxRequestRetries,
     requestHandlerTimeoutSecs,
     maxConcurrency,
