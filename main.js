@@ -375,237 +375,6 @@ const extractPostData = async (page, contentUrl) => {
         console.log(`Error extracting data from ${contentUrl}:`, error.message);
         return null;
     }
-};'),
-                                            alt: '',
-                                            source: 'script'
-                                        });
-                                    }
-                                }
-                            }
-                        } catch (e) {
-                            // Continue searching
-                        }
-                    }
-                }
-            }
-            
-            // Get videos with better detection
-            const videoSelectors = [
-                'article video',
-                'div[role="button"] video', 
-                'main video'
-            ];
-            
-            for (const selector of videoSelectors) {
-                const videoElements = document.querySelectorAll(selector);
-                for (const video of videoElements) {
-                    const videoUrl = video.src || video.querySelector('source')?.src;
-                    if (videoUrl) {
-                        videos.push({
-                            url: videoUrl,
-                            poster: video.poster || '',
-                            duration: video.duration || 0,
-                            width: video.videoWidth || video.width,
-                            height: video.videoHeight || video.height
-                        });
-                    }
-                }
-                if (videos.length > 0) break;
-            }
-            
-            // Extract view count for videos - improved detection
-            let viewCount = 0;
-            if (videos.length > 0) {
-                console.log('Looking for view count...');
-                
-                // Method 1: Look for view count in various text formats
-                const viewPatterns = [
-                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/gi,
-                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*visualizações/gi, // Portuguese
-                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*visualizzazioni/gi, // Italian  
-                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*vues/gi, // French
-                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*просмотров/gi, // Russian
-                ];
-                
-                const pageText = document.body.textContent || '';
-                console.log('Page text sample:', pageText.substring(0, 500));
-                
-                for (const pattern of viewPatterns) {
-                    const matches = pageText.match(pattern);
-                    if (matches && matches.length > 0) {
-                        console.log('Found view matches:', matches);
-                        const viewText = matches[0];
-                        const numberMatch = viewText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)/i);
-                        if (numberMatch) {
-                            let views = numberMatch[1].replace(/,/g, '');
-                            console.log('Extracted view number:', views);
-                            
-                            // Convert K, M, B to numbers
-                            if (views.includes('K')) {
-                                viewCount = Math.floor(parseFloat(views) * 1000);
-                            } else if (views.includes('M')) {
-                                viewCount = Math.floor(parseFloat(views) * 1000000);
-                            } else if (views.includes('B')) {
-                                viewCount = Math.floor(parseFloat(views) * 1000000000);
-                            } else {
-                                viewCount = parseInt(views) || 0;
-                            }
-                            
-                            if (viewCount > 0) {
-                                console.log('Final view count:', viewCount);
-                                break;
-                            }
-                        }
-                    }
-                }
-                
-                // Method 2: Look in specific DOM elements
-                if (viewCount === 0) {
-                    const viewSelectors = [
-                        'span[aria-label*="view"]',
-                        'span[title*="view"]',
-                        'div[aria-label*="view"]',
-                        'span[aria-label*="Play"]',
-                        'div[role="button"] span',
-                        'article span',
-                        '[data-testid*="view"]'
-                    ];
-                    
-                    for (const selector of viewSelectors) {
-                        const elements = document.querySelectorAll(selector);
-                        for (const element of elements) {
-                            const text = (element.getAttribute('aria-label') || 
-                                         element.getAttribute('title') || 
-                                         element.textContent || '').toLowerCase();
-                            
-                            console.log('Checking element text:', text);
-                            
-                            if (text.includes('view') || text.includes('play')) {
-                                const viewMatch = text.match(/(\d+(?:,\d+)*(?:\.\d+)?[kmb]?)/i);
-                                if (viewMatch) {
-                                    let views = viewMatch[1].replace(/,/g, '');
-                                    if (views.includes('k')) {
-                                        viewCount = Math.floor(parseFloat(views) * 1000);
-                                    } else if (views.includes('m')) {
-                                        viewCount = Math.floor(parseFloat(views) * 1000000);
-                                    } else if (views.includes('b')) {
-                                        viewCount = Math.floor(parseFloat(views) * 1000000000);
-                                    } else {
-                                        viewCount = parseInt(views) || 0;
-                                    }
-                                    
-                                    if (viewCount > 0) {
-                                        console.log('Found view count in element:', viewCount);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (viewCount > 0) break;
-                    }
-                }
-                
-                // Method 3: Look in script tags for JSON data
-                if (viewCount === 0) {
-                    const scripts = document.querySelectorAll('script[type="application/ld+json"], script:not([type])');
-                    for (const script of scripts) {
-                        if (script.textContent) {
-                            const scriptText = script.textContent;
-                            
-                            // Look for view_count or similar in JSON
-                            const jsonPatterns = [
-                                /"view_count":\s*(\d+)/gi,
-                                /"views":\s*(\d+)/gi,
-                                /"play_count":\s*(\d+)/gi,
-                                /"video_view_count":\s*(\d+)/gi
-                            ];
-                            
-                            for (const pattern of jsonPatterns) {
-                                const match = scriptText.match(pattern);
-                                if (match && match[1]) {
-                                    viewCount = parseInt(match[1]);
-                                    console.log('Found view count in script:', viewCount);
-                                    break;
-                                }
-                            }
-                            
-                            if (viewCount > 0) break;
-                        }
-                    }
-                }
-                
-                console.log('Final view count result:', viewCount);
-            }
-            
-            post.images = [...new Set(images.map(img => img.url))].map(url => {
-                const imgData = images.find(img => img.url === url);
-                return imgData;
-            }).slice(0, 10); // Limit and remove duplicates
-            
-            post.videos = videos.slice(0, 5);
-            post.viewCount = viewCount;
-            
-            // Determine post type
-            if (videos.length > 0) {
-                post.type = videos.length === 1 ? 'video' : 'carousel_video';
-            } else if (images.length > 1) {
-                post.type = 'carousel_album';
-            } else {
-                post.type = 'image';
-            }
-            
-            // Try to extract timestamp
-            const timeElements = document.querySelectorAll('time[datetime], time[title]');
-            for (const timeEl of timeElements) {
-                const datetime = timeEl.getAttribute('datetime') || timeEl.getAttribute('title');
-                if (datetime) {
-                    post.timestamp = datetime;
-                    break;
-                }
-            }
-            
-            // Extract location if available
-            const locationSelectors = [
-                'a[href*="/explore/locations/"]',
-                'div[data-testid="location"]'
-            ];
-            
-            for (const selector of locationSelectors) {
-                const locationElement = document.querySelector(selector);
-                if (locationElement) {
-                    post.locationName = locationElement.textContent?.trim();
-                    const href = locationElement.getAttribute('href');
-                    if (href) {
-                        const locationId = href.match(/\/explore\/locations\/(\d+)/)?.[1];
-                        if (locationId) {
-                            post.locationId = locationId;
-                        }
-                    }
-                    break;
-                }
-            }
-            
-            return post;
-        }, postUrl);
-        
-        // Log what we found for debugging
-        console.log(`Extracted post data:`, {
-            url: postData.url,
-            caption: postData.caption ? `${postData.caption.substring(0, 50)}...` : 'No caption',
-            likesCount: postData.likesCount,
-            commentsCount: postData.commentsCount,
-            viewCount: postData.viewCount,
-            imagesCount: postData.images?.length || 0,
-            videosCount: postData.videos?.length || 0,
-            imageUrls: postData.images?.map(img => img.url.substring(0, 60) + '...') || [],
-            videoUrls: postData.videos?.map(vid => vid.url.substring(0, 60) + '...') || []
-        });
-        
-        return postData;
-    } catch (error) {
-        console.log(`Error extracting post data from ${postUrl}:`, error.message);
-        return null;
-    }
 };
 
 // Helper function to extract comments
@@ -647,7 +416,7 @@ const extractComments = async (page, maxComments) => {
     return comments;
 };
 
-// Helper function to get posts from profile
+// Helper function to get posts AND reels from profile
 const getProfilePosts = async (page, username, maxPosts) => {
     const profileUrl = `https://www.instagram.com/${username}/`;
     
@@ -657,27 +426,32 @@ const getProfilePosts = async (page, username, maxPosts) => {
         // Wait for the page to load and try multiple selectors
         await page.waitForTimeout(3000);
         
-        // Modern Instagram uses different selectors - try multiple approaches
-        const postSelectors = [
-            'article a[href*="/p/"]',
-            'a[href*="/p/"][role="link"]',
-            'div[role="button"] a[href*="/p/"]',
-            'main a[href*="/p/"]'
+        // Modern Instagram uses different selectors for posts and reels
+        const contentSelectors = [
+            'article a[href*="/p/"]',        // Regular posts
+            'article a[href*="/reel/"]',     // Reels
+            'a[href*="/p/"][role="link"]',   // Posts with role
+            'a[href*="/reel/"][role="link"]', // Reels with role
+            'div[role="button"] a[href*="/p/"]', // Posts in buttons
+            'div[role="button"] a[href*="/reel/"]', // Reels in buttons
+            'main a[href*="/p/"]',           // Posts in main
+            'main a[href*="/reel/"]'         // Reels in main
         ];
         
-        let postLinks = [];
+        let contentLinks = [];
         
         // Try each selector
-        for (const selector of postSelectors) {
+        for (const selector of contentSelectors) {
             try {
                 await page.waitForSelector(selector, { timeout: 5000 });
-                const links = await page.$eval(selector, elements => 
-                    elements.map(el => el.href).filter(href => href && href.includes('/p/'))
+                const links = await page.$$eval(selector, elements => 
+                    elements.map(el => el.href).filter(href => 
+                        href && (href.includes('/p/') || href.includes('/reel/'))
+                    )
                 );
                 if (links.length > 0) {
-                    postLinks = [...new Set([...postLinks, ...links])];
-                    console.log(`Found ${links.length} posts using selector: ${selector}`);
-                    break;
+                    contentLinks = [...new Set([...contentLinks, ...links])];
+                    console.log(`Found ${links.length} content items using selector: ${selector}`);
                 }
             } catch (e) {
                 console.log(`Selector ${selector} failed: ${e.message}`);
@@ -685,9 +459,9 @@ const getProfilePosts = async (page, username, maxPosts) => {
             }
         }
         
-        // If no posts found with selectors, try scrolling and extracting from page content
-        if (postLinks.length === 0) {
-            console.log('No posts found with selectors, trying alternative method...');
+        // If no content found with selectors, try alternative method
+        if (contentLinks.length === 0) {
+            console.log('No content found with selectors, trying alternative method...');
             
             // Scroll to load content
             for (let i = 0; i < 3; i++) {
@@ -695,31 +469,33 @@ const getProfilePosts = async (page, username, maxPosts) => {
                 await page.waitForTimeout(2000);
             }
             
-            // Extract post URLs from page content
+            // Extract URLs from page content
             const pageContent = await page.content();
-            const postMatches = pageContent.match(/\/p\/[A-Za-z0-9_-]+/g);
+            const postMatches = pageContent.match(/\/(p|reel)\/[A-Za-z0-9_-]+/g);
             if (postMatches) {
-                postLinks = [...new Set(postMatches.map(match => `https://www.instagram.com${match}/`))];
-                console.log(`Found ${postLinks.length} posts from page content`);
+                contentLinks = [...new Set(postMatches.map(match => `https://www.instagram.com${match}/`))];
+                console.log(`Found ${contentLinks.length} content items from page content`);
             }
         }
         
-        // Additional scroll to load more posts if needed
-        if (postLinks.length > 0 && postLinks.length < maxPosts) {
+        // Additional scroll to load more content if needed
+        if (contentLinks.length > 0 && contentLinks.length < maxPosts) {
             let scrollAttempts = 0;
             const maxScrollAttempts = 5;
             
-            while (postLinks.length < maxPosts && scrollAttempts < maxScrollAttempts) {
+            while (contentLinks.length < maxPosts && scrollAttempts < maxScrollAttempts) {
                 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
                 await page.waitForTimeout(3000);
                 
                 // Try to get more links
-                for (const selector of postSelectors) {
+                for (const selector of contentSelectors) {
                     try {
-                        const newLinks = await page.$eval(selector, elements => 
-                            elements.map(el => el.href).filter(href => href && href.includes('/p/'))
+                        const newLinks = await page.$$eval(selector, elements => 
+                            elements.map(el => el.href).filter(href => 
+                                href && (href.includes('/p/') || href.includes('/reel/'))
+                            )
                         );
-                        postLinks = [...new Set([...postLinks, ...newLinks])];
+                        contentLinks = [...new Set([...contentLinks, ...newLinks])];
                     } catch (e) {
                         // Continue to next selector
                     }
@@ -729,25 +505,25 @@ const getProfilePosts = async (page, username, maxPosts) => {
             }
         }
         
-        return postLinks.slice(0, maxPosts);
+        return contentLinks.slice(0, maxPosts);
     } catch (error) {
-        console.log(`Error getting posts from profile ${username}:`, error.message);
+        console.log(`Error getting content from profile ${username}:`, error.message);
         
         // Try a direct approach with page evaluation
         try {
-            const postLinks = await page.evaluate(() => {
+            const contentLinks = await page.evaluate(() => {
                 const links = [];
                 const anchors = document.querySelectorAll('a');
                 anchors.forEach(anchor => {
-                    if (anchor.href && anchor.href.includes('/p/')) {
+                    if (anchor.href && (anchor.href.includes('/p/') || anchor.href.includes('/reel/'))) {
                         links.push(anchor.href);
                     }
                 });
                 return [...new Set(links)];
             });
             
-            console.log(`Fallback method found ${postLinks.length} posts`);
-            return postLinks.slice(0, maxPosts);
+            console.log(`Fallback method found ${contentLinks.length} content items`);
+            return contentLinks.slice(0, maxPosts);
         } catch (fallbackError) {
             console.log('Fallback method also failed:', fallbackError.message);
             return [];
