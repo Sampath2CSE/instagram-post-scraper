@@ -44,7 +44,7 @@ const extractPostData = async (page, contentUrl) => {
         // Determine if this is a reel or regular post
         const isReel = contentUrl.includes('/reel/');
         
-        const postData = await page.evaluate((url, isReel) => {
+        const postData = await page.evaluate(({ url, isReel }) => {
             const post = {};
             
             // Basic information
@@ -355,7 +355,7 @@ const extractPostData = async (page, contentUrl) => {
             }
             
             return post;
-        }, contentUrl, isReel);
+        }, { url: contentUrl, isReel });
         
         // Log what we found for debugging
         console.log(`Extracted ${isReel ? 'reel' : 'post'} data:`, {
