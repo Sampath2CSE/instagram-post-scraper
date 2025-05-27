@@ -51,7 +51,7 @@ const extractInstagramData = (html, url) => {
         const isProfileUrl = !url.includes('/p/') && !url.includes('/reel/');
         
         if (isProfileUrl) {
-            return extractProfileDataAdvanced($, html, url);
+            return extractProfileDataFixed($, html, url);
         } else {
             return extractPostDataAdvanced($, html, url);
         }
@@ -61,176 +61,135 @@ const extractInstagramData = (html, url) => {
     }
 };
 
-// Advanced profile data extraction with multiple strategies
-const extractProfileDataAdvanced = ($, html, url) => {
-    console.log('Starting advanced profile data extraction...');
+// Simplified and more robust profile data extraction
+const extractProfileDataFixed = ($, html, url) => {
+    console.log('Starting simplified profile data extraction...');
     
-    const scripts = $('script:not([src])');
-    console.log(`Found ${scripts.length} script tags to analyze`);
-    
-    let profileData = null;
     let postUrls = [];
     
-    // Strategy 1: Look for any Instagram JSON data patterns
+    // Strategy 1: Look for shortcode references anywhere in HTML
+    console.log('Strategy 1: Looking for shortcode patterns...');
+    const shortcodePattern = /"shortcode":"([A-Za-z0-9_-]+)"/g;
+    const shortcodeMatches = [...html.matchAll(shortcodePattern)];
+    
+    if (shortcodeMatches.length > 0) {
+        const uniqueShortcodes = [...new Set(shortcodeMatches.map(match => match[1]))];
+        postUrls = uniqueShortcodes.slice(0, maxPostsPerProfile).map(shortcode => 
+            `https://www.instagram.com/p/${shortcode}/`
+        );
+        console.log(`Found ${postUrls.length} posts from shortcode pattern matching`);
+        return { postUrls, profileData: null };
+    }
+    
+    // Strategy 2: Look for the classic window._sharedData with safer parsing
+    console.log('Strategy 2: Looking for window._sharedData...');
+    const sharedDataMatch = html.match(/window\._sharedData\s*=\s*({.+?});/);
+    if (sharedDataMatch) {
+        try {
+            const sharedData = JSON.parse(sharedDataMatch[1]);
+            const user = sharedData?.entry_data?.ProfilePage?.[0]?.graphql?.user;
+            
+            if (user?.edge_owner_to_timeline_media?.edges) {
+                const edges = user.edge_owner_to_timeline_media.edges;
+                postUrls = edges.slice(0, maxPostsPerProfile).map(edge => {
+                    const shortcode = edge.node.shortcode;
+                    const isReel = edge.node.__typename === 'GraphVideo' && 
+                                  edge.node.product_type === 'clips';
+                    return `https://www.instagram.com/${isReel ? 'reel' : 'p'}/${shortcode}/`;
+                });
+                console.log(`Found ${postUrls.length} posts from window._sharedData`);
+                return { postUrls, profileData: user };
+            }
+        } catch (parseError) {
+            console.log('Failed to parse window._sharedData:', parseError.message);
+        }
+    }
+    
+    // Strategy 3: Look for any GraphQL user data with timeline
+    console.log('Strategy 3: Looking for GraphQL user data...');
+    const userDataPattern = /"user":\s*({[^}]*"edge_owner_to_timeline_media"[^}]*}[^}]*})/;
+    const userDataMatch = html.match(userDataPattern);
+    if (userDataMatch) {
+        try {
+            // Try to extract just the user object safely
+            const userStr = userDataMatch[1];
+            // Find the end of the user object by counting braces
+            let braceCount = 0;
+            let endIndex = 0;
+            for (let i = 0; i < userStr.length; i++) {
+                if (userStr[i] === '{') braceCount++;
+                if (userStr[i] === '}') braceCount--;
+                if (braceCount === 0) {
+                    endIndex = i + 1;
+                    break;
+                }
+            }
+            
+            const cleanUserStr = userStr.substring(0, endIndex);
+            const userData = JSON.parse(cleanUserStr);
+            
+            if (userData?.edge_owner_to_timeline_media?.edges) {
+                const edges = userData.edge_owner_to_timeline_media.edges;
+                postUrls = edges.slice(0, maxPostsPerProfile).map(edge => {
+                    const shortcode = edge.node.shortcode;
+                    const isReel = edge.node.__typename === 'GraphVideo' && 
+                                  edge.node.product_type === 'clips';
+                    return `https://www.instagram.com/${isReel ? 'reel' : 'p'}/${shortcode}/`;
+                });
+                console.log(`Found ${postUrls.length} posts from GraphQL user data`);
+                return { postUrls, profileData: userData };
+            }
+        } catch (parseError) {
+            console.log('Failed to parse GraphQL user data:', parseError.message);
+        }
+    }
+    
+    // Strategy 4: Simple URL pattern matching in HTML
+    console.log('Strategy 4: Looking for Instagram URL patterns...');
+    const urlPattern = /instagram\.com\/p\/([A-Za-z0-9_-]+)/g;
+    const urlMatches = [...html.matchAll(urlPattern)];
+    
+    if (urlMatches.length > 0) {
+        const uniqueShortcodes = [...new Set(urlMatches.map(match => match[1]))];
+        postUrls = uniqueShortcodes.slice(0, maxPostsPerProfile).map(shortcode => 
+            `https://www.instagram.com/p/${shortcode}/`
+        );
+        console.log(`Found ${postUrls.length} posts from URL pattern matching`);
+        return { postUrls, profileData: null };
+    }
+    
+    // Strategy 5: Look for any post-like structures in script tags
+    console.log('Strategy 5: Scanning script tags for post data...');
+    const scripts = $('script:not([src])');
+    
     scripts.each((i, script) => {
         const content = $(script).html();
-        if (!content || content.length < 50) return;
+        if (!content) return;
         
-        // Check for Instagram-specific patterns
-        const hasInstagramData = content.includes('window._sharedData') || 
-                                content.includes('window.__additionalDataLoaded') ||
-                                content.includes('ProfilePage') ||
-                                content.includes('edge_owner_to_timeline_media') ||
-                                content.includes('shortcode') ||
-                                content.includes('GraphQL') ||
-                                content.includes('"user":{') ||
-                                content.includes('timeline_media');
-        
-        if (hasInstagramData) {
-            console.log(`Script ${i}: Found Instagram data indicators`);
+        // Look for any mention of shortcodes in a structured way
+        const timelinePattern = /"edges":\s*\[\s*{[^}]*"shortcode"/;
+        if (timelinePattern.test(content)) {
+            console.log(`Script ${i}: Found timeline-like structure`);
             
-            // Try multiple extraction patterns
-            const patterns = [
-                // Classic patterns
-                /window\._sharedData\s*=\s*({.+?});/,
-                /window\.__additionalDataLoaded\([^,]+,\s*({.+?})\);?/,
-                
-                // Modern patterns
-                /"data":\s*({.+?"edge_owner_to_timeline_media".+?})/,
-                /"graphql":\s*({.+?"edge_owner_to_timeline_media".+?})/,
-                /"user":\s*({.+?"edge_owner_to_timeline_media".+?})/,
-                
-                // Nested patterns
-                /"ProfilePage"[^{]*({.+?"edge_owner_to_timeline_media".+?})/,
-                /edge_owner_to_timeline_media[^{]*({.+?"edges"\s*:.+?})/,
-                
-                // Fallback patterns for any user data
-                /"username":\s*"[^"]+",.*?"edge_owner_to_timeline_media":\s*({.+?})/,
-                /timeline_media[^{]*({.+?"edges".+?})/
-            ];
-            
-            for (let p = 0; p < patterns.length; p++) {
-                const pattern = patterns[p];
-                const matches = content.match(pattern);
-                
-                if (matches) {
-                    try {
-                        let data = JSON.parse(matches[1]);
-                        console.log(`Pattern ${p + 1} matched - attempting to parse user data`);
-                        
-                        let userData = extractUserDataFromObject(data);
-                        
-                        if (userData && userData.edge_owner_to_timeline_media) {
-                            const edges = userData.edge_owner_to_timeline_media.edges || [];
-                            console.log(`Found ${edges.length} posts in timeline data`);
-                            
-                            if (edges.length > 0) {
-                                postUrls = edges.map(edge => {
-                                    const shortcode = edge.node.shortcode;
-                                    const isReel = edge.node.__typename === 'GraphVideo' && 
-                                                  edge.node.product_type === 'clips';
-                                    return `https://www.instagram.com/${isReel ? 'reel' : 'p'}/${shortcode}/`;
-                                });
-                                
-                                profileData = userData;
-                                return false; // Break out of loop
-                            }
-                        }
-                    } catch (parseError) {
-                        console.log(`Parse error for pattern ${p + 1}:`, parseError.message);
-                        continue;
-                    }
-                }
+            // Extract all shortcodes from this script
+            const scriptShortcodes = [...content.matchAll(/"shortcode":"([A-Za-z0-9_-]+)"/g)];
+            if (scriptShortcodes.length > 0) {
+                const uniqueShortcodes = [...new Set(scriptShortcodes.map(match => match[1]))];
+                postUrls = uniqueShortcodes.slice(0, maxPostsPerProfile).map(shortcode => 
+                    `https://www.instagram.com/p/${shortcode}/`
+                );
+                console.log(`Found ${postUrls.length} posts from script ${i}`);
+                return false; // Break the loop
             }
         }
     });
     
-    // Strategy 2: Alternative GraphQL endpoint approach
-    if (postUrls.length === 0) {
-        console.log('Trying alternative extraction methods...');
-        
-        // Look for any shortcodes in the entire HTML
-        const shortcodeMatches = html.match(/"shortcode":"([^"]+)"/g);
-        if (shortcodeMatches) {
-            console.log(`Found ${shortcodeMatches.length} shortcode references`);
-            
-            const shortcodes = shortcodeMatches
-                .map(match => match.match(/"shortcode":"([^"]+)"/)[1])
-                .filter((code, index, arr) => arr.indexOf(code) === index) // Remove duplicates
-                .slice(0, maxPostsPerProfile);
-            
-            postUrls = shortcodes.map(shortcode => 
-                `https://www.instagram.com/p/${shortcode}/`
-            );
-            
-            console.log(`Extracted ${postUrls.length} post URLs from shortcode references`);
-        }
+    if (postUrls.length > 0) {
+        return { postUrls, profileData: null };
     }
     
-    // Strategy 3: Enhanced DOM scanning
-    if (postUrls.length === 0) {
-        console.log('Trying enhanced DOM extraction...');
-        
-        // Look for any links that might be posts
-        const allLinks = $('a[href]');
-        console.log(`Scanning ${allLinks.length} total links for Instagram patterns`);
-        
-        const linkSet = new Set();
-        
-        allLinks.each((i, element) => {
-            const href = $(element).attr('href');
-            if (href) {
-                // Check for Instagram post patterns
-                if (href.includes('/p/') || href.includes('/reel/')) {
-                    const fullUrl = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
-                    linkSet.add(fullUrl);
-                }
-                
-                // Also check for shortcode patterns in any link
-                const shortcodeMatch = href.match(/\/p\/([A-Za-z0-9_-]+)/);
-                if (shortcodeMatch) {
-                    linkSet.add(`https://www.instagram.com/p/${shortcodeMatch[1]}/`);
-                }
-            }
-        });
-        
-        postUrls = Array.from(linkSet).slice(0, maxPostsPerProfile);
-        console.log(`DOM extraction found ${postUrls.length} potential post URLs`);
-    }
-    
-    // Strategy 4: Try to find data in data attributes or other hidden places
-    if (postUrls.length === 0) {
-        console.log('Searching for data in attributes and hidden elements...');
-        
-        // Check data attributes
-        $('[data-*]').each((i, element) => {
-            const $el = $(element);
-            $el.get(0).attribs && Object.keys($el.get(0).attribs).forEach(attr => {
-                if (attr.startsWith('data-') && $el.attr(attr)) {
-                    const value = $el.attr(attr);
-                    if (value.includes('shortcode') || value.includes('/p/')) {
-                        console.log(`Found potential data in ${attr}:`, value.substring(0, 100));
-                    }
-                }
-            });
-        });
-        
-        // Check for any hidden JSON data
-        $('script[type="application/json"], script[type="application/ld+json"]').each((i, element) => {
-            const content = $(element).html();
-            if (content && (content.includes('shortcode') || content.includes('Instagram'))) {
-                console.log(`Found JSON data in script tag ${i}`);
-                try {
-                    const data = JSON.parse(content);
-                    console.log('JSON keys:', Object.keys(data));
-                } catch (e) {
-                    console.log('Could not parse JSON data');
-                }
-            }
-        });
-    }
-    
-    return { postUrls, profileData };
+    console.log('All extraction strategies failed');
+    return { postUrls: [], profileData: null };
 };
 
 // Helper function to recursively search for user data in any object
