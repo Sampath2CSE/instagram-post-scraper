@@ -1,7 +1,6 @@
-// main.js - Instagram Post Scraper (Direct API Approach)
+// main.js - Instagram Post Scraper (instagrapi + Direct API approach)
 import { Actor } from 'apify';
-import { PlaywrightCrawler, Dataset } from 'crawlee';
-import { chromium } from 'playwright';
+import { Dataset } from 'crawlee';
 
 await Actor.init();
 
@@ -25,9 +24,6 @@ const {
     includeLocation = true,
     includeEngagementMetrics = true,
     proxyConfiguration,
-    maxRequestRetries = 3,
-    requestHandlerTimeoutSecs = 60,
-    maxConcurrency = 5,
     dateFrom,
     dateTo
 } = input;
@@ -35,455 +31,462 @@ const {
 // Initialize dataset for storing results
 const dataset = await Dataset.open();
 
-// Helper function to intercept Instagram's API responses
-const extractPostData = async (page, contentUrl) => {
+// Create HTTP client with Instagram mobile app headers
+const createInstagramClient = () => {
+    const headers = {
+        'User-Agent': 'Instagram 276.0.0.18.119 Android (33/13; 420dpi; 1080x2400; samsung; SM-G981B; y2s; exynos990; en_US; 458229237)',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'X-IG-App-ID': '936619743392459',
+        'X-IG-App-Locale': 'en_US',
+        'X-IG-Device-Locale': 'en_US',
+        'X-IG-Mapped-Locale': 'en_US',
+        'X-Pigeon-Session-Id': generateSessionId(),
+        'X-Pigeon-Rawclienttime': Math.floor(Date.now() / 1000).toString(),
+        'X-IG-Connection-Speed': Math.floor(Math.random() * 3000 + 1000) + 'kbps',
+        'X-IG-Bandwidth-Speed-Kbps': Math.floor(Math.random() * 3000 + 1000).toString(),
+        'X-IG-Bandwidth-TotalBytes-B': Math.floor(Math.random() * 50000000 + 10000000).toString(),
+        'X-IG-Bandwidth-TotalTime-MS': Math.floor(Math.random() * 5000 + 1000).toString(),
+        'X-Bloks-Version-Id': '5f56efad68e1edec7801f630b5c122704ec5378adbee6609a448f105f34a9c73',
+        'X-IG-WWW-Claim': '0',
+        'X-Bloks-Is-Layout-RTL': 'false',
+        'X-Bloks-Is-Panorama-Enabled': 'true',
+        'X-IG-Device-ID': generateDeviceId(),
+        'X-IG-Family-Device-ID': generateDeviceId(),
+        'X-IG-Android-ID': generateAndroidId(),
+        'X-IG-Timezone-Offset': '0',
+        'X-IG-Connection-Type': 'WIFI',
+        'X-IG-Capabilities': '3brTvwM=',
+        'X-IG-App-Startup-Country': 'US',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Host': 'i.instagram.com',
+        'X-FB-HTTP-Engine': 'Liger',
+        'Connection': 'keep-alive'
+    };
+
+    return { headers };
+};
+
+// Helper functions to generate realistic IDs
+function generateSessionId() {
+    return 'UFS-' + Array.from({length: 8}, () => Math.random().toString(36)[2]).join('') + '-0';
+}
+
+function generateDeviceId() {
+    return 'android-' + Array.from({length: 16}, () => Math.random().toString(16)[2]).join('');
+}
+
+function generateAndroidId() {
+    return Array.from({length: 16}, () => Math.random().toString(16)[2]).join('');
+}
+
+// Function to extract user info using Instagram's web profile API
+const getUserInfo = async (username) => {
     try {
-        console.log(`Extracting data for: ${contentUrl}`);
+        console.log(`Getting user info for: ${username}`);
         
-        const isReel = contentUrl.includes('/reel/');
-        const shortcode = isReel ? contentUrl.split('/reel/')[1]?.split('/')[0] : contentUrl.split('/p/')[1]?.split('/')[0];
+        const url = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
         
-        // Set up response interception to catch Instagram's API calls
-        const apiData = { media: null, comments: [] };
-        
-        page.on('response', async (response) => {
-            const url = response.url();
-            
-            // Intercept GraphQL API calls
-            if (url.includes('graphql') && response.status() === 200) {
-                try {
-                    const data = await response.json();
-                    
-                    // Check if this response contains our post data
-                    if (data.data && data.data.shortcode_media) {
-                        console.log('Intercepted Instagram API response');
-                        apiData.media = data.data.shortcode_media;
-                    }
-                    
-                    // Check for comments data
-                    if (data.data && data.data.shortcode_media && data.data.shortcode_media.edge_media_to_parent_comment) {
-                        apiData.comments = data.data.shortcode_media.edge_media_to_parent_comment.edges || [];
-                    }
-                } catch (e) {
-                    // Not JSON or different format
-                }
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': 'missing',
+                'X-IG-App-ID': '936619743392459',
+                'X-IG-WWW-Claim': '0',
+                'X-Instagram-AJAX': '1007616134',
+                'Referer': `https://www.instagram.com/${username}/`,
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin'
             }
         });
-        
-        // Navigate to the post
-        await page.goto(contentUrl, { waitUntil: 'networkidle' });
-        await page.waitForTimeout(5000);
-        
-        // If we didn't intercept API data, try to trigger it by scrolling/interacting
-        if (!apiData.media) {
-            console.log('No API data intercepted, trying to trigger API calls...');
-            
-            // Try scrolling to trigger more API calls
-            await page.evaluate(() => {
-                window.scrollBy(0, 500);
-            });
-            await page.waitForTimeout(2000);
-            
-            // Try clicking on elements to trigger API calls
-            try {
-                const likeButton = await page.$('button[aria-label*="like"], svg[aria-label*="like"]');
-                if (likeButton) {
-                    await likeButton.hover();
-                    await page.waitForTimeout(1000);
-                }
-            } catch (e) {
-                // Continue without interaction
-            }
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
+
+        const data = await response.json();
         
-        // Process the intercepted data or fallback to page parsing
-        const postData = await page.evaluate(async ({ url, isReel, shortcode, apiData }) => {
-            const post = {
-                url,
-                isReel,
-                shortcode,
-                type: isReel ? 'reel' : 'image',
-                images: [],
-                videos: [],
-                hashtags: [],
-                mentions: [],
-                likesCount: 0,
-                commentsCount: 0,
-                viewCount: 0,
-                caption: '',
-                ownerUsername: '',
-                timestamp: '',
-                locationName: '',
-                locationId: ''
-            };
-            
-            // Extract owner username from URL
-            const urlParts = url.split('/').filter(p => p);
-            for (let i = 0; i < urlParts.length; i++) {
-                if ((urlParts[i] === 'p' || urlParts[i] === 'reel') && i > 0) {
-                    post.ownerUsername = urlParts[i - 1];
-                    break;
-                }
-            }
-            
-            // Use intercepted API data if available
-            if (apiData.media) {
-                console.log('Using intercepted API data');
-                const media = apiData.media;
-                
-                // Clean caption extraction
-                if (media.edge_media_to_caption?.edges?.[0]?.node?.text) {
-                    post.caption = media.edge_media_to_caption.edges[0].node.text;
-                }
-                
-                // Engagement metrics
-                post.likesCount = media.edge_media_preview_like?.count || 0;
-                post.commentsCount = media.edge_media_to_parent_comment?.count || 0;
-                post.viewCount = media.video_view_count || 0;
-                
-                // Timestamp
-                if (media.taken_at_timestamp) {
-                    post.timestamp = new Date(media.taken_at_timestamp * 1000).toISOString();
-                }
-                
-                // Owner
-                if (media.owner?.username) {
-                    post.ownerUsername = media.owner.username;
-                }
-                
-                // Location
-                if (media.location) {
-                    post.locationName = media.location.name || '';
-                    post.locationId = media.location.id || '';
-                }
-                
-                // Media URLs
-                if (media.display_url) {
-                    post.images.push({
-                        url: media.display_url,
-                        width: media.dimensions?.width || 0,
-                        height: media.dimensions?.height || 0,
-                        source: 'api'
-                    });
-                }
-                
-                if (media.video_url) {
-                    post.videos.push({
-                        url: media.video_url,
-                        width: media.dimensions?.width || 0,
-                        height: media.dimensions?.height || 0,
-                        source: 'api'
-                    });
-                }
-                
-                // Carousel content
-                if (media.edge_sidecar_to_children?.edges) {
-                    for (const edge of media.edge_sidecar_to_children.edges) {
-                        const node = edge.node;
-                        if (node.display_url) {
-                            post.images.push({
-                                url: node.display_url,
-                                width: node.dimensions?.width || 0,
-                                height: node.dimensions?.height || 0,
-                                source: 'carousel'
-                            });
-                        }
-                        if (node.video_url) {
-                            post.videos.push({
-                                url: node.video_url,
-                                width: node.dimensions?.width || 0,
-                                height: node.dimensions?.height || 0,
-                                source: 'carousel'
-                            });
-                        }
-                    }
-                }
-            } else {
-                // Fallback: Parse from page scripts
-                console.log('Falling back to script parsing');
-                
-                const scripts = document.querySelectorAll('script');
-                for (const script of scripts) {
-                    const content = script.textContent || '';
-                    
-                    if (content.includes(shortcode) && content.includes('display_url')) {
-                        try {
-                            // Try to extract post data from script content
-                            const regex = new RegExp(`"shortcode":"${shortcode}"[^}]*"display_url":"([^"]+)"`, 'i');
-                            const match = content.match(regex);
-                            
-                            if (match && match[1]) {
-                                post.images.push({
-                                    url: match[1].replace(/\\u0026/g, '&'),
-                                    source: 'script'
-                                });
-                            }
-                            
-                            // Try to extract video URL
-                            const videoRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"video_url":"([^"]+)"`, 'i');
-                            const videoMatch = content.match(videoRegex);
-                            
-                            if (videoMatch && videoMatch[1]) {
-                                post.videos.push({
-                                    url: videoMatch[1].replace(/\\u0026/g, '&'),
-                                    source: 'script'
-                                });
-                            }
-                            
-                            // Try to extract caption
-                            const captionRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"text":"([^"]+)"`, 'i');
-                            const captionMatch = content.match(captionRegex);
-                            
-                            if (captionMatch && captionMatch[1]) {
-                                post.caption = captionMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-                            }
-                            
-                            // Try to extract engagement
-                            const likeRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"edge_media_preview_like":\\{"count":(\\d+)`, 'i');
-                            const likeMatch = content.match(likeRegex);
-                            if (likeMatch) {
-                                post.likesCount = parseInt(likeMatch[1]);
-                            }
-                            
-                            const commentRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"edge_media_to_parent_comment":\\{"count":(\\d+)`, 'i');
-                            const commentMatch = content.match(commentRegex);
-                            if (commentMatch) {
-                                post.commentsCount = parseInt(commentMatch[1]);
-                            }
-                            
-                            const viewRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"video_view_count":(\\d+)`, 'i');
-                            const viewMatch = content.match(viewRegex);
-                            if (viewMatch) {
-                                post.viewCount = parseInt(viewMatch[1]);
-                            }
-                            
-                            break;
-                        } catch (e) {
-                            console.log('Error parsing script content:', e.message);
-                        }
-                    }
-                }
-                
-                // Last resort: clean meta description for caption
-                if (!post.caption) {
-                    const metaDesc = document.querySelector('meta[property="og:description"]');
-                    if (metaDesc?.content) {
-                        let desc = metaDesc.content;
-                        // Remove engagement metrics and metadata
-                        desc = desc.replace(/^\d+[KMB]?\s*(likes?|comments?)[^"]*-\s*[^"]*\s*on\s*[^:]*:\s*"?/, '');
-                        desc = desc.replace(/".+$/, ''); // Remove trailing quotes and text
-                        if (desc.length > 20) {
-                            post.caption = desc.trim();
-                        }
-                    }
-                }
-            }
-            
-            // Extract hashtags and mentions from caption
-            if (post.caption) {
-                post.hashtags = [...new Set((post.caption.match(/#[a-zA-Z0-9_]+/g) || []).map(h => h.toLowerCase()))];
-                post.mentions = [...new Set((post.caption.match(/@[a-zA-Z0-9_.]+/g) || []).map(m => m.toLowerCase()))];
-            }
-            
-            // Determine post type
-            if (isReel) {
-                post.type = 'reel';
-            } else if (post.videos.length > 0) {
-                post.type = post.videos.length === 1 ? 'video' : 'carousel_video';
-            } else if (post.images.length > 1) {
-                post.type = 'carousel_album';
-            } else {
-                post.type = 'image';
-            }
-            
-            return post;
-        }, { url: contentUrl, isReel, shortcode, apiData });
-        
-        console.log(`Extraction complete for ${contentUrl}:`);
-        console.log(`- Caption: ${postData.caption ? 'Found (' + postData.caption.length + ' chars)' : 'Not found'}`);
-        console.log(`- Media: ${postData.images.length} images, ${postData.videos.length} videos`);
-        console.log(`- Engagement: ${postData.likesCount} likes, ${postData.commentsCount} comments, ${postData.viewCount} views`);
-        
-        return postData;
-        
+        if (data.data && data.data.user) {
+            const user = data.data.user;
+            console.log(`Successfully got user info for ${username}: ${user.edge_owner_to_timeline_media?.count || 0} posts`);
+            return user;
+        } else {
+            throw new Error('Invalid response structure');
+        }
     } catch (error) {
-        console.log(`Error extracting data from ${contentUrl}:`, error.message);
+        console.log(`Error getting user info for ${username}:`, error.message);
         return null;
     }
 };
 
-// Helper function to extract comments
-const extractComments = async (page, maxComments) => {
+// Function to get post info by shortcode
+const getPostInfo = async (shortcode) => {
     try {
-        // Look for comment data in intercepted API responses or DOM
-        const comments = await page.evaluate((maxComments) => {
-            const comments = [];
-            
-            // Try to find comments in the page
-            const commentElements = document.querySelectorAll('article ul li, [role="article"] div');
-            
-            for (let i = 0; i < Math.min(commentElements.length, maxComments); i++) {
-                const element = commentElements[i];
-                const text = element.textContent?.trim();
-                
-                if (text && text.length > 15 && text.length < 300 && 
-                    !text.includes('like') && !text.includes('reply') && 
-                    !text.match(/^\d+/)) {
-                    comments.push({
-                        text: text,
-                        position: i + 1
-                    });
-                }
-            }
-            
-            return comments;
-        }, maxComments);
+        console.log(`Getting post info for shortcode: ${shortcode}`);
         
-        return comments;
-    } catch (error) {
-        console.log('Error extracting comments:', error.message);
-        return [];
-    }
-};
-
-// Helper function to get posts from profile
-const getProfilePosts = async (page, username, maxPosts) => {
-    const profileUrl = `https://www.instagram.com/${username}/`;
-    
-    try {
-        console.log(`Loading profile: ${profileUrl}`);
-        await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(5000);
+        // Try the GraphQL endpoint first
+        const graphqlUrl = 'https://www.instagram.com/graphql/query/';
+        const queryHash = '2b0673e0dc4580674a88d426fe00ea90'; // This hash is for post info queries
         
-        const contentUrls = await page.evaluate(() => {
-            const links = [];
-            const anchors = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
-            
-            for (const anchor of anchors) {
-                const href = anchor.getAttribute('href');
-                if (href && (href.includes('/p/') || href.includes('/reel/'))) {
-                    const fullUrl = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
-                    links.push(fullUrl);
-                }
+        const response = await fetch(`${graphqlUrl}?query_hash=${queryHash}&variables=${encodeURIComponent(JSON.stringify({
+            shortcode: shortcode,
+            child_comment_count: includeComments ? maxCommentsPerPost : 0,
+            fetch_comment_count: includeComments ? maxCommentsPerPost : 0,
+            parent_comment_count: includeComments ? maxCommentsPerPost : 0,
+            has_threaded_comments: true
+        }))}`, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': 'missing',
+                'X-IG-App-ID': '936619743392459',
+                'X-IG-WWW-Claim': '0',
+                'X-Instagram-AJAX': '1007616134',
+                'Referer': `https://www.instagram.com/p/${shortcode}/`,
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin'
             }
-            
-            return [...new Set(links)];
         });
+
+        if (response.ok) {
+            const data = await response.json();
+            if (data.data && data.data.shortcode_media) {
+                console.log(`Successfully got post info for ${shortcode}`);
+                return data.data.shortcode_media;
+            }
+        }
+
+        // Fallback: Try to get post info from the post page
+        console.log(`GraphQL failed, trying fallback method for ${shortcode}`);
+        const postUrl = `https://www.instagram.com/p/${shortcode}/`;
         
-        console.log(`Found ${contentUrls.length} content URLs on profile`);
-        return contentUrls.slice(0, maxPosts);
+        const pageResponse = await fetch(postUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none'
+            }
+        });
+
+        if (pageResponse.ok) {
+            const html = await pageResponse.text();
+            
+            // Extract JSON data from the HTML
+            const scriptMatch = html.match(/window\._sharedData\s*=\s*({.+?});/);
+            if (scriptMatch) {
+                const sharedData = JSON.parse(scriptMatch[1]);
+                const postData = sharedData.entry_data?.PostPage?.[0]?.graphql?.shortcode_media;
+                if (postData) {
+                    console.log(`Successfully extracted post data from HTML for ${shortcode}`);
+                    return postData;
+                }
+            }
+
+            // Alternative: Look for other JSON patterns
+            const additionalMatch = html.match(/"shortcode_media":\s*({.+?})(?=,"toast_content_on_load")/);
+            if (additionalMatch) {
+                const postData = JSON.parse(additionalMatch[1]);
+                console.log(`Successfully extracted post data from alternative pattern for ${shortcode}`);
+                return postData;
+            }
+        }
+
+        throw new Error('All methods failed to get post data');
         
     } catch (error) {
-        console.log(`Error loading profile ${username}:`, error.message);
+        console.log(`Error getting post info for ${shortcode}:`, error.message);
+        return null;
+    }
+};
+
+// Function to process Instagram post data
+const processPostData = (postData, isReel = false) => {
+    if (!postData) return null;
+
+    const post = {
+        url: `https://www.instagram.com/${isReel ? 'reel' : 'p'}/${postData.shortcode}/`,
+        shortcode: postData.shortcode,
+        isReel: isReel,
+        type: isReel ? 'reel' : 'image',
+        images: [],
+        videos: [],
+        hashtags: [],
+        mentions: [],
+        likesCount: 0,
+        commentsCount: 0,
+        viewCount: 0,
+        caption: '',
+        ownerUsername: '',
+        timestamp: '',
+        locationName: '',
+        locationId: '',
+        comments: []
+    };
+
+    // Extract basic info
+    post.ownerUsername = postData.owner?.username || '';
+    post.likesCount = postData.edge_media_preview_like?.count || 0;
+    post.commentsCount = postData.edge_media_to_parent_comment?.count || 0;
+    post.viewCount = postData.video_view_count || 0;
+
+    // Extract timestamp
+    if (postData.taken_at_timestamp) {
+        post.timestamp = new Date(postData.taken_at_timestamp * 1000).toISOString();
+    }
+
+    // Extract caption
+    if (postData.edge_media_to_caption?.edges?.length > 0) {
+        post.caption = postData.edge_media_to_caption.edges[0].node.text || '';
+        
+        // Extract hashtags and mentions
+        if (post.caption) {
+            post.hashtags = [...new Set((post.caption.match(/#[a-zA-Z0-9_]+/g) || []).map(h => h.toLowerCase()))];
+            post.mentions = [...new Set((post.caption.match(/@[a-zA-Z0-9_.]+/g) || []).map(m => m.toLowerCase()))];
+        }
+    }
+
+    // Extract location
+    if (postData.location) {
+        post.locationName = postData.location.name || '';
+        post.locationId = postData.location.id || '';
+    }
+
+    // Extract media URLs
+    if (postData.display_url) {
+        post.images.push({
+            url: postData.display_url,
+            width: postData.dimensions?.width || 0,
+            height: postData.dimensions?.height || 0,
+            source: 'api'
+        });
+    }
+
+    if (postData.video_url) {
+        post.videos.push({
+            url: postData.video_url,
+            width: postData.dimensions?.width || 0,
+            height: postData.dimensions?.height || 0,
+            source: 'api'
+        });
+    }
+
+    // Handle carousel posts
+    if (postData.edge_sidecar_to_children?.edges) {
+        post.images = []; // Clear single image if carousel
+        post.videos = []; // Clear single video if carousel
+        
+        for (const edge of postData.edge_sidecar_to_children.edges) {
+            const node = edge.node;
+            if (node.display_url) {
+                post.images.push({
+                    url: node.display_url,
+                    width: node.dimensions?.width || 0,
+                    height: node.dimensions?.height || 0,
+                    source: 'carousel'
+                });
+            }
+            if (node.video_url) {
+                post.videos.push({
+                    url: node.video_url,
+                    width: node.dimensions?.width || 0,
+                    height: node.dimensions?.height || 0,
+                    source: 'carousel'
+                });
+            }
+        }
+    }
+
+    // Extract comments if requested
+    if (includeComments && postData.edge_media_to_parent_comment?.edges) {
+        post.comments = postData.edge_media_to_parent_comment.edges
+            .slice(0, maxCommentsPerPost)
+            .map((edge, index) => ({
+                text: edge.node.text || '',
+                username: edge.node.owner?.username || '',
+                position: index + 1,
+                created_at: edge.node.created_at ? new Date(edge.node.created_at * 1000).toISOString() : ''
+            }));
+    }
+
+    // Determine post type
+    if (isReel) {
+        post.type = 'reel';
+    } else if (post.videos.length > 0) {
+        post.type = post.videos.length === 1 ? 'video' : 'carousel_video';
+    } else if (post.images.length > 1) {
+        post.type = 'carousel_album';
+    } else {
+        post.type = 'image';
+    }
+
+    return post;
+};
+
+// Function to get posts from a user profile
+const getProfilePosts = async (username, maxPosts) => {
+    try {
+        const userInfo = await getUserInfo(username);
+        if (!userInfo) {
+            console.log(`Could not get user info for ${username}`);
+            return [];
+        }
+
+        const posts = [];
+        const mediaEdges = userInfo.edge_owner_to_timeline_media?.edges || [];
+        
+        console.log(`Found ${mediaEdges.length} posts for ${username}`);
+        
+        for (let i = 0; i < Math.min(mediaEdges.length, maxPosts); i++) {
+            const edge = mediaEdges[i];
+            const shortcode = edge.node.shortcode;
+            
+            // Determine if this is a reel
+            const isReel = edge.node.__typename === 'GraphVideo' || edge.node.product_type === 'clips';
+            
+            console.log(`Processing ${isReel ? 'reel' : 'post'} ${i + 1}/${Math.min(mediaEdges.length, maxPosts)}: ${shortcode}`);
+            
+            // Get detailed post info
+            const postData = await getPostInfo(shortcode);
+            if (postData) {
+                const processedPost = processPostData(postData, isReel);
+                if (processedPost) {
+                    // Apply date filters
+                    if (dateFrom || dateTo) {
+                        const postDate = new Date(processedPost.timestamp);
+                        if (dateFrom && postDate < new Date(dateFrom)) continue;
+                        if (dateTo && postDate > new Date(dateTo)) continue;
+                    }
+                    
+                    posts.push(processedPost);
+                }
+            }
+            
+            // Add delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+        }
+        
+        return posts;
+    } catch (error) {
+        console.log(`Error getting posts for ${username}:`, error.message);
         return [];
     }
 };
 
-// Create proxy configuration
-const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration);
-
-// Main crawler configuration
-const crawler = new PlaywrightCrawler({
-    launchContext: {
-        launcher: chromium,
-        launchOptions: {
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-web-security',
-                '--disable-features=VizDisplayCompositor'
-            ]
+// Function to get individual post by URL
+const getPostByUrl = async (postUrl) => {
+    try {
+        const shortcode = postUrl.match(/\/(?:p|reel)\/([A-Za-z0-9_-]+)/)?.[1];
+        if (!shortcode) {
+            throw new Error('Invalid post URL format');
         }
-    },
-    proxyConfiguration: proxyConfig,
-    maxRequestRetries,
-    requestHandlerTimeoutSecs,
-    maxConcurrency,
-    
-    async requestHandler({ page, request, log }) {
-        const url = request.url;
-        log.info(`Processing: ${url}`);
         
-        try {
-            if (url.includes('/p/') || url.includes('/reel/')) {
-                const postData = await extractPostData(page, url);
+        const isReel = postUrl.includes('/reel/');
+        
+        console.log(`Getting ${isReel ? 'reel' : 'post'} data for: ${shortcode}`);
+        
+        const postData = await getPostInfo(shortcode);
+        if (postData) {
+            return processPostData(postData, isReel);
+        }
+        
+        return null;
+    } catch (error) {
+        console.log(`Error getting post from URL ${postUrl}:`, error.message);
+        return null;
+    }
+};
+
+// Main execution
+async function main() {
+    try {
+        const allPosts = [];
+        
+        // Process usernames
+        for (const username of usernames) {
+            if (username.trim()) {
+                console.log(`\n=== Processing profile: ${username} ===`);
+                const posts = await getProfilePosts(username.trim(), maxPostsPerProfile);
+                allPosts.push(...posts);
                 
-                if (postData) {
-                    if (dateFrom || dateTo) {
-                        const postDate = new Date(postData.timestamp);
-                        if (dateFrom && postDate < new Date(dateFrom)) return;
-                        if (dateTo && postDate > new Date(dateTo)) return;
-                    }
-                    
-                    if (includeComments) {
-                        postData.comments = await extractComments(page, maxCommentsPerPost);
-                    }
-                    
-                    if (!includeHashtags) delete postData.hashtags;
-                    if (!includeMentions) delete postData.mentions;
-                    if (!includeLocation) {
-                        delete postData.locationName;
-                        delete postData.locationId;
-                    }
-                    if (!includeEngagementMetrics) {
-                        delete postData.likesCount;
-                        delete postData.commentsCount;
-                        delete postData.viewCount;
-                    }
-                    
-                    postData.scrapedAt = new Date().toISOString();
-                    
-                    await dataset.pushData(postData);
-                    log.info(`Successfully scraped ${postData.isReel ? 'reel' : 'post'}: ${url}`);
-                }
-            } else {
-                const username = url.replace('https://www.instagram.com/', '').replace('/', '');
-                const contentUrls = await getProfilePosts(page, username, maxPostsPerProfile);
-                
-                log.info(`Found ${contentUrls.length} content items for ${username}`);
-                
-                for (const contentUrl of contentUrls) {
-                    await crawler.addRequests([{ url: contentUrl }]);
+                // Add delay between profiles
+                if (usernames.indexOf(username) < usernames.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 3000));
                 }
             }
-        } catch (error) {
-            log.error(`Error processing ${url}:`, error);
         }
-    },
-    
-    failedRequestHandler({ request, log }) {
-        log.error(`Request ${request.url} failed multiple times`);
-    }
-});
-
-// Add initial requests
-const initialRequests = [];
-
-for (const username of usernames) {
-    if (username.trim()) {
-        const profileUrl = `https://www.instagram.com/${username.trim()}/`;
-        initialRequests.push({ url: profileUrl });
+        
+        // Process individual post URLs
+        for (const postUrl of postUrls) {
+            if (postUrl.trim()) {
+                console.log(`\n=== Processing post URL: ${postUrl} ===`);
+                const post = await getPostByUrl(postUrl.trim());
+                if (post) {
+                    allPosts.push(post);
+                }
+                
+                // Add delay between posts
+                if (postUrls.indexOf(postUrl) < postUrls.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+            }
+        }
+        
+        // Filter data based on user preferences and save results
+        for (const post of allPosts) {
+            if (!includeHashtags) delete post.hashtags;
+            if (!includeMentions) delete post.mentions;
+            if (!includeLocation) {
+                delete post.locationName;
+                delete post.locationId;
+            }
+            if (!includeEngagementMetrics) {
+                delete post.likesCount;
+                delete post.commentsCount;
+                delete post.viewCount;
+            }
+            if (!includeComments) {
+                delete post.comments;
+            }
+            
+            post.scrapedAt = new Date().toISOString();
+            
+            await dataset.pushData(post);
+        }
+        
+        console.log(`\n=== Scraping completed ===`);
+        console.log(`Total posts scraped: ${allPosts.length}`);
+        
+        // Log summary
+        const imageCount = allPosts.reduce((sum, post) => sum + post.images.length, 0);
+        const videoCount = allPosts.reduce((sum, post) => sum + post.videos.length, 0);
+        const reelCount = allPosts.filter(post => post.isReel).length;
+        
+        console.log(`- Images extracted: ${imageCount}`);
+        console.log(`- Videos extracted: ${videoCount}`);
+        console.log(`- Reels: ${reelCount}`);
+        console.log(`- Regular posts: ${allPosts.length - reelCount}`);
+        
+    } catch (error) {
+        console.error('Main execution error:', error);
+        throw error;
     }
 }
 
-for (const contentUrl of postUrls) {
-    if (contentUrl.trim() && (contentUrl.includes('/p/') || contentUrl.includes('/reel/'))) {
-        initialRequests.push({ url: contentUrl.trim() });
-    }
-}
-
-if (initialRequests.length === 0) {
-    throw new Error('No valid usernames or post URLs provided');
-}
-
-console.log(`Starting scraper with ${initialRequests.length} initial requests`);
-
-await crawler.addRequests(initialRequests);
-await crawler.run();
-
-const datasetInfo = await dataset.getInfo();
-console.log(`Scraping completed. Total items: ${datasetInfo.itemCount}`);
-
+// Run the scraper
+await main();
 await Actor.exit();
