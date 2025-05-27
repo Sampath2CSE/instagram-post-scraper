@@ -38,8 +38,22 @@ const dataset = await Dataset.open();
 // Helper function to extract post/reel data
 const extractPostData = async (page, contentUrl) => {
     try {
-        // Wait for content to load with longer timeout
-        await page.waitForTimeout(5000);
+        // Wait for content to load and check if page loaded properly
+        await page.waitForTimeout(3000);
+        
+        // Check if we hit a login wall or error page
+        const loginCheck = await page.$('input[name="username"], div:has-text("Log in"), div:has-text("Sign up")');
+        if (loginCheck) {
+            console.log('Hit login wall, trying to continue anyway...');
+            await page.waitForTimeout(2000);
+        }
+        
+        // Wait for main content
+        try {
+            await page.waitForSelector('main, article', { timeout: 10000 });
+        } catch (e) {
+            console.log('Main content not found, proceeding with extraction...');
+        }
         
         // Determine if this is a reel or regular post
         const isReel = contentUrl.includes('/reel/');
@@ -70,6 +84,21 @@ const extractPostData = async (page, contentUrl) => {
                         const captionMatch = script.textContent.match(/"edge_media_to_caption":\s*{\s*"edges":\s*\[\s*{\s*"node":\s*{\s*"text":\s*"([^"]+)"/);
                         if (captionMatch && captionMatch[1]) {
                             caption = captionMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+                            break;
+                        }
+                    } catch (e) {
+                        // Continue searching
+                    }
+                }
+                
+                // Also try simpler caption patterns
+                if (!caption && script.textContent && script.textContent.includes('"caption"')) {
+                    try {
+                        const simpleCaptionMatch = script.textContent.match(/"caption":\s*"([^"]+)"/);
+                        if (simpleCaptionMatch && simpleCaptionMatch[1] && 
+                            simpleCaptionMatch[1] !== 'Contact Uploading & Non-Users' &&
+                            simpleCaptionMatch[1].length > 5) {
+                            caption = simpleCaptionMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
                             break;
                         }
                     } catch (e) {
@@ -326,29 +355,60 @@ const extractPostData = async (page, contentUrl) => {
             const videos = [];
             
             if (isReel) {
-                // Reel-specific video selectors
+                // Reel-specific video selectors with better detection
                 const reelVideoSelectors = [
                     'video[playsinline]',
                     'div[role="button"] video',
                     'article video',
-                    'main video'
+                    'main video',
+                    'video[src]',
+                    'video source'
                 ];
                 
-                for (const selector of reelVideoSelectors) {
-                    const videoElements = document.querySelectorAll(selector);
-                    for (const video of videoElements) {
-                        const videoUrl = video.src || video.querySelector('source')?.src;
-                        if (videoUrl) {
-                            videos.push({
-                                url: videoUrl,
-                                poster: video.poster || '',
-                                duration: video.duration || 0,
-                                width: video.videoWidth || video.width,
-                                height: video.videoHeight || video.height
-                            });
+                // Method 1: Try JSON data extraction for video URLs
+                for (const script of scripts) {
+                    if (script.textContent && script.textContent.includes('"video_url"')) {
+                        try {
+                            const videoMatches = script.textContent.match(/"video_url":\s*"([^"]+)"/g);
+                            if (videoMatches) {
+                                for (const match of videoMatches) {
+                                    const urlMatch = match.match(/"video_url":\s*"([^"]+)"/);
+                                    if (urlMatch && urlMatch[1]) {
+                                        const cleanUrl = urlMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
+                                        videos.push({
+                                            url: cleanUrl,
+                                            source: 'script',
+                                            quality: 'high'
+                                        });
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            // Continue to DOM extraction
                         }
+                        if (videos.length > 0) break;
                     }
-                    if (videos.length > 0) break;
+                }
+                
+                // Method 2: DOM-based video extraction if script method failed
+                if (videos.length === 0) {
+                    for (const selector of reelVideoSelectors) {
+                        const videoElements = document.querySelectorAll(selector);
+                        for (const video of videoElements) {
+                            const videoUrl = video.src || video.querySelector('source')?.src;
+                            if (videoUrl && videoUrl.startsWith('blob:') === false) {
+                                videos.push({
+                                    url: videoUrl,
+                                    poster: video.poster || '',
+                                    duration: video.duration || 0,
+                                    width: video.videoWidth || video.width,
+                                    height: video.videoHeight || video.height,
+                                    source: 'dom'
+                                });
+                            }
+                        }
+                        if (videos.length > 0) break;
+                    }
                 }
                 
                 post.type = 'reel';
@@ -519,18 +579,50 @@ const extractPostData = async (page, contentUrl) => {
                 }
             }
             
-            post.images = images.slice(0, 10);
-            post.videos = videos.slice(0, 5);
+            // Remove duplicates and ensure we have actual URLs
+            post.images = [...new Map(images.map(img => [img.url, img])).values()].slice(0, 10);
+            post.videos = [...new Map(videos.map(vid => [vid.url, vid])).values()].slice(0, 5);
             
-            // Try to extract timestamp
-            const timeElements = document.querySelectorAll('time[datetime], time[title]');
-            for (const timeEl of timeElements) {
-                const datetime = timeEl.getAttribute('datetime') || timeEl.getAttribute('title');
-                if (datetime) {
-                    post.timestamp = datetime;
-                    break;
+            // Debug logging
+            console.log(`Debug - Found ${post.images.length} images, ${post.videos.length} videos for ${isReel ? 'reel' : 'post'}`);
+            if (post.images.length > 0) {
+                console.log('Sample image URL:', post.images[0].url.substring(0, 80) + '...');
+            }
+            if (post.videos.length > 0) {
+                console.log('Sample video URL:', post.videos[0].url.substring(0, 80) + '...');
+            }
+            
+            // Extract timestamp more reliably
+            let timestamp = '';
+            
+            // Method 1: Look in JSON data for timestamp
+            for (const script of scripts) {
+                if (script.textContent && script.textContent.includes('"taken_at_timestamp"')) {
+                    try {
+                        const timestampMatch = script.textContent.match(/"taken_at_timestamp":\s*(\d+)/);
+                        if (timestampMatch && timestampMatch[1]) {
+                            timestamp = new Date(parseInt(timestampMatch[1]) * 1000).toISOString();
+                            break;
+                        }
+                    } catch (e) {
+                        // Continue searching
+                    }
                 }
             }
+            
+            // Method 2: Look for datetime attributes in DOM
+            if (!timestamp) {
+                const timeElements = document.querySelectorAll('time[datetime], time[title], [datetime]');
+                for (const timeEl of timeElements) {
+                    const datetime = timeEl.getAttribute('datetime') || timeEl.getAttribute('title');
+                    if (datetime && datetime.includes('T')) {
+                        timestamp = datetime;
+                        break;
+                    }
+                }
+            }
+            
+            post.timestamp = timestamp;
             
             // Extract location if available
             const locationSelectors = [
