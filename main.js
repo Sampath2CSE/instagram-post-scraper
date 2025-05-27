@@ -58,44 +58,57 @@ const extractPostData = async (page, contentUrl) => {
                 post.shortcode = url.split('/p/')[1]?.split('/')[0] || '';
             }
             
-            // Try multiple approaches to get caption
+            // Try multiple approaches to get clean caption (without engagement metrics)
             let caption = '';
             
-            // Method 1: Try meta description
-            const metaDesc = document.querySelector('meta[property="og:description"]');
-            if (metaDesc) {
-                caption = metaDesc.getAttribute('content') || '';
+            // Method 1: Try to find actual caption text elements
+            const captionSelectors = [
+                'article div[data-testid="post-text"] span',
+                'article h1',
+                'article span[dir="auto"]:not([aria-label*="like"]):not([aria-label*="comment"])',
+                'div[role="button"] span:not([aria-label*="like"]):not([aria-label*="comment"])',
+                'article div span:not([aria-label*="like"]):not([aria-label*="comment"])',
+                'main article span:not([aria-label*="like"]):not([aria-label*="comment"])'
+            ];
+            
+            for (const selector of captionSelectors) {
+                const elements = document.querySelectorAll(selector);
+                for (const element of elements) {
+                    const text = element.textContent?.trim();
+                    if (text && 
+                        text.length > 10 && 
+                        !text.match(/^\d+\s*(like|comment|view)/i) && // Exclude engagement text
+                        !text.includes('•') && // Exclude metadata
+                        (text.includes(' ') || text.includes('#') || text.includes('@'))) { // Likely caption
+                        caption = text;
+                        break;
+                    }
+                }
+                if (caption) break;
             }
             
-            // Method 2: Try various caption selectors
+            // Method 2: Try meta description but clean it
             if (!caption) {
-                const captionSelectors = [
-                    'article div[data-testid="post-text"]',
-                    'article h1',
-                    'article span[dir="auto"]',
-                    'div[role="button"] span',
-                    'article div span',
-                    'main article span',
-                    'div[data-testid="media-caption"]'
-                ];
-                
-                for (const selector of captionSelectors) {
-                    const element = document.querySelector(selector);
-                    if (element && element.textContent && element.textContent.trim().length > 10) {
-                        caption = element.textContent.trim();
-                        break;
+                const metaDesc = document.querySelector('meta[property="og:description"]');
+                if (metaDesc) {
+                    let metaText = metaDesc.getAttribute('content') || '';
+                    // Remove engagement metrics from meta description
+                    metaText = metaText.replace(/^\d+\s*(likes?|comments?|views?)[^-]*-\s*/i, '');
+                    metaText = metaText.replace(/\s*on\s+(Instagram|May|June|July|August|September|October|November|December)\s+\d+.*$/i, '');
+                    if (metaText && metaText.length > 10) {
+                        caption = metaText.trim();
                     }
                 }
             }
             
-            // Method 3: Search in page scripts for JSON data
+            // Method 3: Search in page scripts for clean caption
             if (!caption) {
                 const scripts = document.querySelectorAll('script');
                 for (const script of scripts) {
                     if (script.textContent && script.textContent.includes('"caption"')) {
                         try {
                             const matches = script.textContent.match(/"caption":\s*"([^"]+)"/);
-                            if (matches && matches[1]) {
+                            if (matches && matches[1] && matches[1].length > 10) {
                                 caption = matches[1];
                                 break;
                             }
