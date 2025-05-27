@@ -508,9 +508,10 @@ const crawler = new CheerioCrawler({
     
     // Advanced session handling
     sessionPoolOptions: {
+        maxPoolSize: 10,
         sessionOptions: {
-            maxPoolSize: 10,
-            sessionRotationIntervalSecs: 600, // Rotate sessions every 10 minutes
+            maxUsageCount: 5, // Use each session max 5 times
+            maxErrorScore: 3, // Retire session after 3 errors
         }
     },
     
