@@ -35,18 +35,28 @@ const {
 // Initialize dataset for storing results
 const dataset = await Dataset.open();
 
-// Helper function to extract post data
-const extractPostData = async (page, postUrl) => {
+// Helper function to extract post/reel data
+const extractPostData = async (page, contentUrl) => {
     try {
         // Wait for content to load with longer timeout
         await page.waitForTimeout(5000);
         
-        const postData = await page.evaluate((url) => {
+        // Determine if this is a reel or regular post
+        const isReel = contentUrl.includes('/reel/');
+        
+        const postData = await page.evaluate((url, isReel) => {
             const post = {};
             
-            // Basic post information
+            // Basic information
             post.url = url;
-            post.shortcode = url.split('/p/')[1]?.split('/')[0] || '';
+            post.isReel = isReel;
+            
+            if (isReel) {
+                post.shortcode = url.split('/reel/')[1]?.split('/')[0] || '';
+                post.type = 'reel';
+            } else {
+                post.shortcode = url.split('/p/')[1]?.split('/')[0] || '';
+            }
             
             // Try multiple approaches to get caption
             let caption = '';
@@ -65,7 +75,8 @@ const extractPostData = async (page, postUrl) => {
                     'article span[dir="auto"]',
                     'div[role="button"] span',
                     'article div span',
-                    'main article span'
+                    'main article span',
+                    'div[data-testid="media-caption"]'
                 ];
                 
                 for (const selector of captionSelectors) {
@@ -83,7 +94,6 @@ const extractPostData = async (page, postUrl) => {
                 for (const script of scripts) {
                     if (script.textContent && script.textContent.includes('"caption"')) {
                         try {
-                            // Try to extract caption from JSON data
                             const matches = script.textContent.match(/"caption":\s*"([^"]+)"/);
                             if (matches && matches[1]) {
                                 caption = matches[1];
@@ -118,114 +128,254 @@ const extractPostData = async (page, postUrl) => {
                 const ownerLink = document.querySelector(selector);
                 if (ownerLink) {
                     const href = ownerLink.getAttribute('href');
-                    if (href && href.startsWith('/') && !href.includes('/p/')) {
+                    if (href && href.startsWith('/') && !href.includes('/p/') && !href.includes('/reel/')) {
                         post.ownerUsername = href.replace('/', '') || '';
                         break;
                     }
                 }
             }
             
-            // Try to extract engagement metrics from various sources
+            // Extract engagement metrics
             let likeCount = 0;
             let commentCount = 0;
+            let viewCount = 0;
             
-            // Method 1: Look for aria-labels
-            const buttons = document.querySelectorAll('button, span');
+            // Get all buttons and spans for engagement data
+            const buttons = document.querySelectorAll('button, span, div');
             for (const btn of buttons) {
                 const ariaLabel = btn.getAttribute('aria-label') || '';
                 const text = btn.textContent || '';
+                const combinedText = (ariaLabel + ' ' + text).toLowerCase();
                 
                 // Check for likes
-                if (ariaLabel.includes('like') || text.includes('like')) {
-                    const likeMatch = (ariaLabel + ' ' + text).match(/(\d+(?:,\d+)*)\s*like/i);
+                if (combinedText.includes('like') && !combinedText.includes('unlike')) {
+                    const likeMatch = combinedText.match(/(\d+(?:,\d+)*(?:\.\d+)?[kmb]?)\s*like/i);
                     if (likeMatch) {
-                        likeCount = parseInt(likeMatch[1].replace(/,/g, ''));
+                        let likes = likeMatch[1].replace(/,/g, '');
+                        if (likes.includes('k')) {
+                            likeCount = Math.floor(parseFloat(likes) * 1000);
+                        } else if (likes.includes('m')) {
+                            likeCount = Math.floor(parseFloat(likes) * 1000000);
+                        } else if (likes.includes('b')) {
+                            likeCount = Math.floor(parseFloat(likes) * 1000000000);
+                        } else {
+                            likeCount = parseInt(likes) || 0;
+                        }
                     }
                 }
                 
                 // Check for comments
-                if (ariaLabel.includes('comment') || text.includes('comment')) {
-                    const commentMatch = (ariaLabel + ' ' + text).match(/(\d+(?:,\d+)*)\s*comment/i);
+                if (combinedText.includes('comment')) {
+                    const commentMatch = combinedText.match(/(\d+(?:,\d+)*(?:\.\d+)?[kmb]?)\s*comment/i);
                     if (commentMatch) {
-                        commentCount = parseInt(commentMatch[1].replace(/,/g, ''));
+                        let comments = commentMatch[1].replace(/,/g, '');
+                        if (comments.includes('k')) {
+                            commentCount = Math.floor(parseFloat(comments) * 1000);
+                        } else if (comments.includes('m')) {
+                            commentCount = Math.floor(parseFloat(comments) * 1000000);
+                        } else if (comments.includes('b')) {
+                            commentCount = Math.floor(parseFloat(comments) * 1000000000);
+                        } else {
+                            commentCount = parseInt(comments) || 0;
+                        }
+                    }
+                }
+                
+                // Check for views (especially important for reels)
+                if (combinedText.includes('view') || combinedText.includes('play')) {
+                    const viewMatch = combinedText.match(/(\d+(?:,\d+)*(?:\.\d+)?[kmb]?)\s*(?:view|play)/i);
+                    if (viewMatch) {
+                        let views = viewMatch[1].replace(/,/g, '');
+                        if (views.includes('k')) {
+                            viewCount = Math.floor(parseFloat(views) * 1000);
+                        } else if (views.includes('m')) {
+                            viewCount = Math.floor(parseFloat(views) * 1000000);
+                        } else if (views.includes('b')) {
+                            viewCount = Math.floor(parseFloat(views) * 1000000000);
+                        } else {
+                            viewCount = parseInt(views) || 0;
+                        }
                     }
                 }
             }
             
-            // Method 2: Look in page content for numbers
-            const pageText = document.body.textContent || '';
-            if (likeCount === 0) {
-                const likeMatches = pageText.match(/(\d+(?:,\d+)*)\s*likes?/gi);
-                if (likeMatches && likeMatches.length > 0) {
-                    likeCount = parseInt(likeMatches[0].replace(/[^\d]/g, ''));
+            // For reels, also search page text more aggressively for view count
+            if (isReel && viewCount === 0) {
+                const pageText = document.body.textContent || '';
+                const viewPatterns = [
+                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/gi,
+                    /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*plays?/gi,
+                    /(\d+[,.]?\d*[KMB]?)\s*views?/gi
+                ];
+                
+                for (const pattern of viewPatterns) {
+                    const matches = pageText.match(pattern);
+                    if (matches && matches.length > 0) {
+                        const viewText = matches[0];
+                        const numberMatch = viewText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)/i);
+                        if (numberMatch) {
+                            let views = numberMatch[1].replace(/,/g, '').toLowerCase();
+                            if (views.includes('k')) {
+                                viewCount = Math.floor(parseFloat(views) * 1000);
+                            } else if (views.includes('m')) {
+                                viewCount = Math.floor(parseFloat(views) * 1000000);
+                            } else if (views.includes('b')) {
+                                viewCount = Math.floor(parseFloat(views) * 1000000000);
+                            } else {
+                                viewCount = parseInt(views) || 0;
+                            }
+                            
+                            if (viewCount > 0) break;
+                        }
+                    }
                 }
             }
             
             post.likesCount = likeCount;
             post.commentsCount = commentCount;
+            post.viewCount = viewCount;
             
-            // Extract media information with better selectors
+            // Extract media information with reel-specific selectors
             const images = [];
             const videos = [];
             
-            // Method 1: Get high-quality images from various selectors
-            const imageSelectors = [
-                'article img[src*="scontent"]',
-                'article img[src*="cdninstagram"]', 
-                'article img[src*="instagram.com"]',
-                'div[role="button"] img',
-                'main img[src*="scontent"]',
-                'img[style*="object-fit"]'
+            if (isReel) {
+                // Reel-specific video selectors
+                const reelVideoSelectors = [
+                    'video[playsinline]',
+                    'div[role="button"] video',
+                    'article video',
+                    'main video'
+                ];
+                
+                for (const selector of reelVideoSelectors) {
+                    const videoElements = document.querySelectorAll(selector);
+                    for (const video of videoElements) {
+                        const videoUrl = video.src || video.querySelector('source')?.src;
+                        if (videoUrl) {
+                            videos.push({
+                                url: videoUrl,
+                                poster: video.poster || '',
+                                duration: video.duration || 0,
+                                width: video.videoWidth || video.width,
+                                height: video.videoHeight || video.height
+                            });
+                        }
+                    }
+                    if (videos.length > 0) break;
+                }
+                
+                post.type = 'reel';
+            } else {
+                // Regular post image/video extraction
+                const imageSelectors = [
+                    'article img[src*="scontent"]',
+                    'article img[src*="cdninstagram"]', 
+                    'article img[src*="instagram.com"]',
+                    'div[role="button"] img',
+                    'main img[src*="scontent"]'
+                ];
+                
+                for (const selector of imageSelectors) {
+                    const imgElements = document.querySelectorAll(selector);
+                    for (const img of imgElements) {
+                        if (img.src && 
+                            (img.src.includes('scontent') || img.src.includes('cdninstagram')) &&
+                            !img.src.includes('profile') && 
+                            !img.src.includes('story') &&
+                            img.width > 100 && img.height > 100) {
+                            images.push({
+                                url: img.src,
+                                alt: img.alt || '',
+                                width: img.naturalWidth || img.width,
+                                height: img.naturalHeight || img.height
+                            });
+                        }
+                    }
+                    if (images.length > 0) break;
+                }
+                
+                // Check for videos in regular posts
+                const videoElements = document.querySelectorAll('article video, main video');
+                for (const video of videoElements) {
+                    const videoUrl = video.src || video.querySelector('source')?.src;
+                    if (videoUrl) {
+                        videos.push({
+                            url: videoUrl,
+                            poster: video.poster || '',
+                            duration: video.duration || 0,
+                            width: video.videoWidth || video.width,
+                            height: video.videoHeight || video.height
+                        });
+                    }
+                }
+                
+                // Determine post type
+                if (videos.length > 0) {
+                    post.type = videos.length === 1 ? 'video' : 'carousel_video';
+                } else if (images.length > 1) {
+                    post.type = 'carousel_album';
+                } else {
+                    post.type = 'image';
+                }
+            }
+            
+            post.images = images.slice(0, 10);
+            post.videos = videos.slice(0, 5);
+            
+            // Try to extract timestamp
+            const timeElements = document.querySelectorAll('time[datetime], time[title]');
+            for (const timeEl of timeElements) {
+                const datetime = timeEl.getAttribute('datetime') || timeEl.getAttribute('title');
+                if (datetime) {
+                    post.timestamp = datetime;
+                    break;
+                }
+            }
+            
+            // Extract location if available
+            const locationSelectors = [
+                'a[href*="/explore/locations/"]',
+                'div[data-testid="location"]'
             ];
             
-            for (const selector of imageSelectors) {
-                const imgElements = document.querySelectorAll(selector);
-                for (const img of imgElements) {
-                    if (img.src && 
-                        (img.src.includes('scontent') || img.src.includes('cdninstagram')) &&
-                        !img.src.includes('profile') && 
-                        !img.src.includes('story') &&
-                        img.width > 100 && img.height > 100) { // Filter out small images
-                        images.push({
-                            url: img.src,
-                            alt: img.alt || '',
-                            width: img.naturalWidth || img.width,
-                            height: img.naturalHeight || img.height
-                        });
+            for (const selector of locationSelectors) {
+                const locationElement = document.querySelector(selector);
+                if (locationElement) {
+                    post.locationName = locationElement.textContent?.trim();
+                    const href = locationElement.getAttribute('href');
+                    if (href) {
+                        const locationId = href.match(/\/explore\/locations\/(\d+)/)?.[1];
+                        if (locationId) {
+                            post.locationId = locationId;
+                        }
                     }
-                }
-                if (images.length > 0) break; // Use first successful selector
-            }
-            
-            // Method 2: Extract from background images
-            if (images.length === 0) {
-                const bgElements = document.querySelectorAll('div[style*="background-image"]');
-                for (const el of bgElements) {
-                    const style = el.getAttribute('style');
-                    const urlMatch = style.match(/background-image:\s*url\(['"]?([^'"]+)['"]?\)/);
-                    if (urlMatch && urlMatch[1] && urlMatch[1].includes('instagram')) {
-                        images.push({
-                            url: urlMatch[1],
-                            alt: '',
-                            source: 'background'
-                        });
-                    }
+                    break;
                 }
             }
             
-            // Method 3: Search in page scripts for image URLs
-            if (images.length === 0) {
-                const scripts = document.querySelectorAll('script');
-                for (const script of scripts) {
-                    if (script.textContent && script.textContent.includes('display_url')) {
-                        try {
-                            const urlMatches = script.textContent.match(/"display_url":\s*"([^"]+)"/g);
-                            if (urlMatches) {
-                                for (const match of urlMatches) {
-                                    const url = match.match(/"display_url":\s*"([^"]+)"/)[1];
-                                    if (url) {
-                                        images.push({
-                                            url: url.replace(/\\u0026/g, '&'),
+            return post;
+        }, contentUrl, isReel);
+        
+        // Log what we found for debugging
+        console.log(`Extracted ${isReel ? 'reel' : 'post'} data:`, {
+            url: postData.url,
+            type: postData.type,
+            isReel: postData.isReel,
+            caption: postData.caption ? `${postData.caption.substring(0, 50)}...` : 'No caption',
+            likesCount: postData.likesCount,
+            commentsCount: postData.commentsCount,
+            viewCount: postData.viewCount,
+            imagesCount: postData.images?.length || 0,
+            videosCount: postData.videos?.length || 0
+        });
+        
+        return postData;
+    } catch (error) {
+        console.log(`Error extracting data from ${contentUrl}:`, error.message);
+        return null;
+    }
+};'),
                                             alt: '',
                                             source: 'script'
                                         });
@@ -633,8 +783,8 @@ const crawler = new PlaywrightCrawler({
         log.info(`Processing: ${url}`);
         
         try {
-            if (url.includes('/p/')) {
-                // Handle individual post
+            if (url.includes('/p/') || url.includes('/reel/')) {
+                // Handle individual post or reel
                 const postData = await extractPostData(page, url);
                 
                 if (postData) {
@@ -660,23 +810,24 @@ const crawler = new PlaywrightCrawler({
                     if (!includeEngagementMetrics) {
                         delete postData.likesCount;
                         delete postData.commentsCount;
+                        delete postData.viewCount;
                     }
                     
                     postData.scrapedAt = new Date().toISOString();
                     
                     await dataset.pushData(postData);
-                    log.info(`Successfully scraped post: ${url}`);
+                    log.info(`Successfully scraped ${postData.isReel ? 'reel' : 'post'}: ${url}`);
                 }
             } else {
-                // Handle profile page - get post URLs
+                // Handle profile page - get post AND reel URLs
                 const username = url.replace('https://www.instagram.com/', '').replace('/', '');
-                const postUrls = await getProfilePosts(page, username, maxPostsPerProfile);
+                const contentUrls = await getProfilePosts(page, username, maxPostsPerProfile);
                 
-                log.info(`Found ${postUrls.length} posts for ${username}`);
+                log.info(`Found ${contentUrls.length} content items for ${username} (posts and reels)`);
                 
-                // Add post URLs to request queue
-                for (const postUrl of postUrls) {
-                    await crawler.addRequests([{ url: postUrl }]);
+                // Add content URLs to request queue
+                for (const contentUrl of contentUrls) {
+                    await crawler.addRequests([{ url: contentUrl }]);
                 }
             }
         } catch (error) {
@@ -700,10 +851,10 @@ for (const username of usernames) {
     }
 }
 
-// Add direct post URLs
-for (const postUrl of postUrls) {
-    if (postUrl.trim() && postUrl.includes('/p/')) {
-        initialRequests.push({ url: postUrl.trim() });
+// Add direct post/reel URLs
+for (const contentUrl of postUrls) {
+    if (contentUrl.trim() && (contentUrl.includes('/p/') || contentUrl.includes('/reel/'))) {
+        initialRequests.push({ url: contentUrl.trim() });
     }
 }
 
