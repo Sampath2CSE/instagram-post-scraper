@@ -164,34 +164,166 @@ const extractPostData = async (page, postUrl) => {
             post.likesCount = likeCount;
             post.commentsCount = commentCount;
             
-            // Extract media information
+            // Extract media information with better selectors
             const images = [];
             const videos = [];
             
-            // Get images
-            const imgElements = document.querySelectorAll('img[src*="instagram.com"], img[src*="cdninstagram.com"]');
-            for (const img of imgElements) {
-                if (img.src && img.src.includes('instagram') && !img.src.includes('profile')) {
-                    images.push({
-                        url: img.src,
-                        alt: img.alt || ''
-                    });
+            // Method 1: Get high-quality images from various selectors
+            const imageSelectors = [
+                'article img[src*="scontent"]',
+                'article img[src*="cdninstagram"]', 
+                'article img[src*="instagram.com"]',
+                'div[role="button"] img',
+                'main img[src*="scontent"]',
+                'img[style*="object-fit"]'
+            ];
+            
+            for (const selector of imageSelectors) {
+                const imgElements = document.querySelectorAll(selector);
+                for (const img of imgElements) {
+                    if (img.src && 
+                        (img.src.includes('scontent') || img.src.includes('cdninstagram')) &&
+                        !img.src.includes('profile') && 
+                        !img.src.includes('story') &&
+                        img.width > 100 && img.height > 100) { // Filter out small images
+                        images.push({
+                            url: img.src,
+                            alt: img.alt || '',
+                            width: img.naturalWidth || img.width,
+                            height: img.naturalHeight || img.height
+                        });
+                    }
+                }
+                if (images.length > 0) break; // Use first successful selector
+            }
+            
+            // Method 2: Extract from background images
+            if (images.length === 0) {
+                const bgElements = document.querySelectorAll('div[style*="background-image"]');
+                for (const el of bgElements) {
+                    const style = el.getAttribute('style');
+                    const urlMatch = style.match(/background-image:\s*url\(['"]?([^'"]+)['"]?\)/);
+                    if (urlMatch && urlMatch[1] && urlMatch[1].includes('instagram')) {
+                        images.push({
+                            url: urlMatch[1],
+                            alt: '',
+                            source: 'background'
+                        });
+                    }
                 }
             }
             
-            // Get videos
-            const videoElements = document.querySelectorAll('video');
-            for (const video of videoElements) {
-                if (video.src) {
-                    videos.push({
-                        url: video.src,
-                        poster: video.poster || ''
-                    });
+            // Method 3: Search in page scripts for image URLs
+            if (images.length === 0) {
+                const scripts = document.querySelectorAll('script');
+                for (const script of scripts) {
+                    if (script.textContent && script.textContent.includes('display_url')) {
+                        try {
+                            const urlMatches = script.textContent.match(/"display_url":\s*"([^"]+)"/g);
+                            if (urlMatches) {
+                                for (const match of urlMatches) {
+                                    const url = match.match(/"display_url":\s*"([^"]+)"/)[1];
+                                    if (url) {
+                                        images.push({
+                                            url: url.replace(/\\u0026/g, '&'),
+                                            alt: '',
+                                            source: 'script'
+                                        });
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            // Continue searching
+                        }
+                    }
                 }
             }
             
-            post.images = images.slice(0, 10); // Limit to 10 images
-            post.videos = videos.slice(0, 5);  // Limit to 5 videos
+            // Get videos with better detection
+            const videoSelectors = [
+                'article video',
+                'div[role="button"] video', 
+                'main video'
+            ];
+            
+            for (const selector of videoSelectors) {
+                const videoElements = document.querySelectorAll(selector);
+                for (const video of videoElements) {
+                    const videoUrl = video.src || video.querySelector('source')?.src;
+                    if (videoUrl) {
+                        videos.push({
+                            url: videoUrl,
+                            poster: video.poster || '',
+                            duration: video.duration || 0,
+                            width: video.videoWidth || video.width,
+                            height: video.videoHeight || video.height
+                        });
+                    }
+                }
+                if (videos.length > 0) break;
+            }
+            
+            // Extract view count for videos
+            let viewCount = 0;
+            if (videos.length > 0) {
+                // Look for view count in various formats
+                const viewSelectors = [
+                    'span[aria-label*="views"]',
+                    'span[title*="views"]', 
+                    'div[aria-label*="views"]'
+                ];
+                
+                for (const selector of viewSelectors) {
+                    const viewElement = document.querySelector(selector);
+                    if (viewElement) {
+                        const viewText = viewElement.getAttribute('aria-label') || 
+                                       viewElement.getAttribute('title') || 
+                                       viewElement.textContent;
+                        const viewMatch = viewText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/i);
+                        if (viewMatch) {
+                            let views = viewMatch[1].replace(/,/g, '');
+                            // Convert K, M, B to numbers
+                            if (views.includes('K')) {
+                                views = parseFloat(views) * 1000;
+                            } else if (views.includes('M')) {
+                                views = parseFloat(views) * 1000000;
+                            } else if (views.includes('B')) {
+                                views = parseFloat(views) * 1000000000;
+                            } else {
+                                views = parseInt(views);
+                            }
+                            viewCount = views;
+                            break;
+                        }
+                    }
+                }
+                
+                // Alternative: search in page text for view count
+                if (viewCount === 0) {
+                    const pageText = document.body.textContent || '';
+                    const viewMatches = pageText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/gi);
+                    if (viewMatches && viewMatches.length > 0) {
+                        let views = viewMatches[0].replace(/[^\d.KMB]/gi, '');
+                        if (views.includes('K')) {
+                            viewCount = parseFloat(views) * 1000;
+                        } else if (views.includes('M')) {
+                            viewCount = parseFloat(views) * 1000000;
+                        } else if (views.includes('B')) {
+                            viewCount = parseFloat(views) * 1000000000;
+                        } else {
+                            viewCount = parseInt(views.replace(/[^\d]/g, ''));
+                        }
+                    }
+                }
+            }
+            
+            post.images = [...new Set(images.map(img => img.url))].map(url => {
+                const imgData = images.find(img => img.url === url);
+                return imgData;
+            }).slice(0, 10); // Limit and remove duplicates
+            
+            post.videos = videos.slice(0, 5);
+            post.viewCount = viewCount;
             
             // Determine post type
             if (videos.length > 0) {
@@ -242,8 +374,11 @@ const extractPostData = async (page, postUrl) => {
             caption: postData.caption ? `${postData.caption.substring(0, 50)}...` : 'No caption',
             likesCount: postData.likesCount,
             commentsCount: postData.commentsCount,
+            viewCount: postData.viewCount,
             imagesCount: postData.images?.length || 0,
-            videosCount: postData.videos?.length || 0
+            videosCount: postData.videos?.length || 0,
+            imageUrls: postData.images?.map(img => img.url.substring(0, 60) + '...') || [],
+            videoUrls: postData.videos?.map(vid => vid.url.substring(0, 60) + '...') || []
         });
         
         return postData;
