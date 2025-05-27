@@ -1,4 +1,4 @@
-// main.js - Instagram Post Scraper (Reliable Version)
+// main.js - Instagram Post Scraper (Direct API Approach)
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { chromium } from 'playwright';
@@ -35,22 +35,73 @@ const {
 // Initialize dataset for storing results
 const dataset = await Dataset.open();
 
-// Helper function to extract data using Instagram's internal API data
+// Helper function to intercept Instagram's API responses
 const extractPostData = async (page, contentUrl) => {
     try {
         console.log(`Extracting data for: ${contentUrl}`);
         
-        // Wait for page to load
+        const isReel = contentUrl.includes('/reel/');
+        const shortcode = isReel ? contentUrl.split('/reel/')[1]?.split('/')[0] : contentUrl.split('/p/')[1]?.split('/')[0];
+        
+        // Set up response interception to catch Instagram's API calls
+        const apiData = { media: null, comments: [] };
+        
+        page.on('response', async (response) => {
+            const url = response.url();
+            
+            // Intercept GraphQL API calls
+            if (url.includes('graphql') && response.status() === 200) {
+                try {
+                    const data = await response.json();
+                    
+                    // Check if this response contains our post data
+                    if (data.data && data.data.shortcode_media) {
+                        console.log('Intercepted Instagram API response');
+                        apiData.media = data.data.shortcode_media;
+                    }
+                    
+                    // Check for comments data
+                    if (data.data && data.data.shortcode_media && data.data.shortcode_media.edge_media_to_parent_comment) {
+                        apiData.comments = data.data.shortcode_media.edge_media_to_parent_comment.edges || [];
+                    }
+                } catch (e) {
+                    // Not JSON or different format
+                }
+            }
+        });
+        
+        // Navigate to the post
+        await page.goto(contentUrl, { waitUntil: 'networkidle' });
         await page.waitForTimeout(5000);
         
-        const isReel = contentUrl.includes('/reel/');
+        // If we didn't intercept API data, try to trigger it by scrolling/interacting
+        if (!apiData.media) {
+            console.log('No API data intercepted, trying to trigger API calls...');
+            
+            // Try scrolling to trigger more API calls
+            await page.evaluate(() => {
+                window.scrollBy(0, 500);
+            });
+            await page.waitForTimeout(2000);
+            
+            // Try clicking on elements to trigger API calls
+            try {
+                const likeButton = await page.$('button[aria-label*="like"], svg[aria-label*="like"]');
+                if (likeButton) {
+                    await likeButton.hover();
+                    await page.waitForTimeout(1000);
+                }
+            } catch (e) {
+                // Continue without interaction
+            }
+        }
         
-        // Extract data by finding Instagram's JSON-LD or internal data
-        const postData = await page.evaluate(async ({ url, isReel }) => {
+        // Process the intercepted data or fallback to page parsing
+        const postData = await page.evaluate(async ({ url, isReel, shortcode, apiData }) => {
             const post = {
                 url,
                 isReel,
-                shortcode: isReel ? url.split('/reel/')[1]?.split('/')[0] : url.split('/p/')[1]?.split('/')[0],
+                shortcode,
                 type: isReel ? 'reel' : 'image',
                 images: [],
                 videos: [],
@@ -66,7 +117,7 @@ const extractPostData = async (page, contentUrl) => {
                 locationId: ''
             };
             
-            // Extract owner username from URL (most reliable)
+            // Extract owner username from URL
             const urlParts = url.split('/').filter(p => p);
             for (let i = 0; i < urlParts.length; i++) {
                 if ((urlParts[i] === 'p' || urlParts[i] === 'reel') && i > 0) {
@@ -75,196 +126,154 @@ const extractPostData = async (page, contentUrl) => {
                 }
             }
             
-            // Method 1: Try to find Instagram's GraphQL data (most reliable)
-            let foundData = false;
-            const scripts = document.querySelectorAll('script');
-            
-            for (const script of scripts) {
-                const content = script.textContent || '';
+            // Use intercepted API data if available
+            if (apiData.media) {
+                console.log('Using intercepted API data');
+                const media = apiData.media;
                 
-                // Look for the specific post data in Instagram's JSON
-                if (content.includes('{"data":{"shortcode_media":') || content.includes('"shortcode_media"')) {
-                    try {
-                        // Try to extract the GraphQL response
-                        let jsonMatch = content.match(/"shortcode_media":\s*({[^}]+(?:{[^}]*}[^}]*)*})/);
-                        if (!jsonMatch) {
-                            // Alternative pattern
-                            jsonMatch = content.match(/{"data":{"shortcode_media":({[^}]+(?:{[^}]*}[^}]*)*})}/);
-                        }
-                        
-                        if (jsonMatch) {
-                            const mediaData = JSON.parse(jsonMatch[1]);
-                            console.log('Found Instagram media data');
-                            
-                            // Extract caption
-                            if (mediaData.edge_media_to_caption?.edges?.[0]?.node?.text) {
-                                post.caption = mediaData.edge_media_to_caption.edges[0].node.text;
-                            }
-                            
-                            // Extract engagement
-                            if (mediaData.edge_media_preview_like?.count) {
-                                post.likesCount = mediaData.edge_media_preview_like.count;
-                            }
-                            if (mediaData.edge_media_to_parent_comment?.count) {
-                                post.commentsCount = mediaData.edge_media_to_parent_comment.count;
-                            }
-                            if (mediaData.video_view_count) {
-                                post.viewCount = mediaData.video_view_count;
-                            }
-                            
-                            // Extract timestamp
-                            if (mediaData.taken_at_timestamp) {
-                                post.timestamp = new Date(mediaData.taken_at_timestamp * 1000).toISOString();
-                            }
-                            
-                            // Extract location
-                            if (mediaData.location?.name) {
-                                post.locationName = mediaData.location.name;
-                                post.locationId = mediaData.location.id || '';
-                            }
-                            
-                            // Extract media URLs
-                            if (mediaData.display_url) {
-                                post.images.push({
-                                    url: mediaData.display_url,
-                                    width: mediaData.dimensions?.width || 0,
-                                    height: mediaData.dimensions?.height || 0,
-                                    source: 'graphql'
-                                });
-                            }
-                            
-                            if (mediaData.video_url) {
-                                post.videos.push({
-                                    url: mediaData.video_url,
-                                    width: mediaData.dimensions?.width || 0,
-                                    height: mediaData.dimensions?.height || 0,
-                                    source: 'graphql'
-                                });
-                            }
-                            
-                            // Handle carousel posts
-                            if (mediaData.edge_sidecar_to_children?.edges) {
-                                for (const edge of mediaData.edge_sidecar_to_children.edges) {
-                                    const node = edge.node;
-                                    if (node.display_url) {
-                                        post.images.push({
-                                            url: node.display_url,
-                                            width: node.dimensions?.width || 0,
-                                            height: node.dimensions?.height || 0,
-                                            source: 'carousel'
-                                        });
-                                    }
-                                    if (node.video_url) {
-                                        post.videos.push({
-                                            url: node.video_url,
-                                            width: node.dimensions?.width || 0,
-                                            height: node.dimensions?.height || 0,
-                                            source: 'carousel'
-                                        });
-                                    }
-                                }
-                            }
-                            
-                            foundData = true;
-                            break;
-                        }
-                    } catch (e) {
-                        console.log('Error parsing Instagram data:', e.message);
-                    }
+                // Clean caption extraction
+                if (media.edge_media_to_caption?.edges?.[0]?.node?.text) {
+                    post.caption = media.edge_media_to_caption.edges[0].node.text;
                 }
-            }
-            
-            // Method 2: Fallback to meta tags if GraphQL data not found
-            if (!foundData || !post.caption) {
-                const metaDesc = document.querySelector('meta[property="og:description"]');
-                if (metaDesc && metaDesc.content) {
-                    let content = metaDesc.content;
-                    
-                    // Clean the meta description to get just the caption
-                    // Remove engagement metrics from start
-                    content = content.replace(/^\d+[KMB]?\s*(likes?|followers?|following)[^"]*"\s*-\s*/, '');
-                    content = content.replace(/^[^"]*"\s*-\s*/, ''); // Remove quoted usernames
-                    content = content.replace(/\s*on Instagram.*$/, ''); // Remove Instagram suffix
-                    
-                    if (content.length > 10 && !post.caption) {
-                        post.caption = content.trim();
-                    }
-                }
-            }
-            
-            // Method 3: Extract engagement from aria-labels and visible text (only if not found in JSON)
-            if (!foundData && (post.likesCount === 0 || post.commentsCount === 0 || (isReel && post.viewCount === 0))) {
-                // Look for engagement metrics in specific elements
-                const buttons = document.querySelectorAll('button[aria-label], span[aria-label], section span');
                 
-                for (const button of buttons) {
-                    const ariaLabel = button.getAttribute('aria-label') || '';
-                    const text = button.textContent || '';
-                    const fullText = (ariaLabel + ' ' + text).toLowerCase();
-                    
-                    // Extract likes
-                    if (post.likesCount === 0 && fullText.includes('like') && !fullText.includes('unlike')) {
-                        const likeMatch = fullText.match(/(\d+(?:,\d+)*)\s*like/);
-                        if (likeMatch) {
-                            post.likesCount = parseInt(likeMatch[1].replace(/,/g, ''));
-                        }
-                    }
-                    
-                    // Extract comments
-                    if (post.commentsCount === 0 && fullText.includes('comment')) {
-                        const commentMatch = fullText.match(/(\d+(?:,\d+)*)\s*comment/);
-                        if (commentMatch) {
-                            post.commentsCount = parseInt(commentMatch[1].replace(/,/g, ''));
-                        }
-                    }
-                    
-                    // Extract views for reels
-                    if (isReel && post.viewCount === 0 && (fullText.includes('view') || fullText.includes('play'))) {
-                        const viewMatch = fullText.match(/(\d+(?:,\d+)*)\s*(?:view|play)/);
-                        if (viewMatch) {
-                            const views = parseInt(viewMatch[1].replace(/,/g, ''));
-                            if (views > 100) { // Only accept reasonable view counts
-                                post.viewCount = views;
-                            }
-                        }
-                    }
+                // Engagement metrics
+                post.likesCount = media.edge_media_preview_like?.count || 0;
+                post.commentsCount = media.edge_media_to_parent_comment?.count || 0;
+                post.viewCount = media.video_view_count || 0;
+                
+                // Timestamp
+                if (media.taken_at_timestamp) {
+                    post.timestamp = new Date(media.taken_at_timestamp * 1000).toISOString();
                 }
-            }
-            
-            // Method 4: Fallback media extraction (only if not found in JSON)
-            if (post.images.length === 0 && post.videos.length === 0) {
-                // Only look for media within the main article/content area
-                const mainContent = document.querySelector('main article, main, article');
-                if (mainContent) {
-                    // Look for images within the main content
-                    const images = mainContent.querySelectorAll('img[src]');
-                    for (const img of images) {
-                        if (img.src && 
-                            (img.src.includes('scontent') || img.src.includes('cdninstagram')) &&
-                            !img.src.includes('profile') &&
-                            !img.src.includes('s150x150') &&
-                            img.naturalWidth > 300) {
-                            
+                
+                // Owner
+                if (media.owner?.username) {
+                    post.ownerUsername = media.owner.username;
+                }
+                
+                // Location
+                if (media.location) {
+                    post.locationName = media.location.name || '';
+                    post.locationId = media.location.id || '';
+                }
+                
+                // Media URLs
+                if (media.display_url) {
+                    post.images.push({
+                        url: media.display_url,
+                        width: media.dimensions?.width || 0,
+                        height: media.dimensions?.height || 0,
+                        source: 'api'
+                    });
+                }
+                
+                if (media.video_url) {
+                    post.videos.push({
+                        url: media.video_url,
+                        width: media.dimensions?.width || 0,
+                        height: media.dimensions?.height || 0,
+                        source: 'api'
+                    });
+                }
+                
+                // Carousel content
+                if (media.edge_sidecar_to_children?.edges) {
+                    for (const edge of media.edge_sidecar_to_children.edges) {
+                        const node = edge.node;
+                        if (node.display_url) {
                             post.images.push({
-                                url: img.src,
-                                width: img.naturalWidth,
-                                height: img.naturalHeight,
-                                source: 'fallback'
+                                url: node.display_url,
+                                width: node.dimensions?.width || 0,
+                                height: node.dimensions?.height || 0,
+                                source: 'carousel'
+                            });
+                        }
+                        if (node.video_url) {
+                            post.videos.push({
+                                url: node.video_url,
+                                width: node.dimensions?.width || 0,
+                                height: node.dimensions?.height || 0,
+                                source: 'carousel'
                             });
                         }
                     }
+                }
+            } else {
+                // Fallback: Parse from page scripts
+                console.log('Falling back to script parsing');
+                
+                const scripts = document.querySelectorAll('script');
+                for (const script of scripts) {
+                    const content = script.textContent || '';
                     
-                    // Look for videos within the main content
-                    const videos = mainContent.querySelectorAll('video[src], video source');
-                    for (const video of videos) {
-                        const videoUrl = video.src || video.querySelector('source')?.src;
-                        if (videoUrl && !videoUrl.startsWith('blob:')) {
-                            post.videos.push({
-                                url: videoUrl,
-                                width: video.videoWidth || 0,
-                                height: video.videoHeight || 0,
-                                source: 'fallback'
-                            });
+                    if (content.includes(shortcode) && content.includes('display_url')) {
+                        try {
+                            // Try to extract post data from script content
+                            const regex = new RegExp(`"shortcode":"${shortcode}"[^}]*"display_url":"([^"]+)"`, 'i');
+                            const match = content.match(regex);
+                            
+                            if (match && match[1]) {
+                                post.images.push({
+                                    url: match[1].replace(/\\u0026/g, '&'),
+                                    source: 'script'
+                                });
+                            }
+                            
+                            // Try to extract video URL
+                            const videoRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"video_url":"([^"]+)"`, 'i');
+                            const videoMatch = content.match(videoRegex);
+                            
+                            if (videoMatch && videoMatch[1]) {
+                                post.videos.push({
+                                    url: videoMatch[1].replace(/\\u0026/g, '&'),
+                                    source: 'script'
+                                });
+                            }
+                            
+                            // Try to extract caption
+                            const captionRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"text":"([^"]+)"`, 'i');
+                            const captionMatch = content.match(captionRegex);
+                            
+                            if (captionMatch && captionMatch[1]) {
+                                post.caption = captionMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+                            }
+                            
+                            // Try to extract engagement
+                            const likeRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"edge_media_preview_like":\\{"count":(\\d+)`, 'i');
+                            const likeMatch = content.match(likeRegex);
+                            if (likeMatch) {
+                                post.likesCount = parseInt(likeMatch[1]);
+                            }
+                            
+                            const commentRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"edge_media_to_parent_comment":\\{"count":(\\d+)`, 'i');
+                            const commentMatch = content.match(commentRegex);
+                            if (commentMatch) {
+                                post.commentsCount = parseInt(commentMatch[1]);
+                            }
+                            
+                            const viewRegex = new RegExp(`"shortcode":"${shortcode}"[^}]*"video_view_count":(\\d+)`, 'i');
+                            const viewMatch = content.match(viewRegex);
+                            if (viewMatch) {
+                                post.viewCount = parseInt(viewMatch[1]);
+                            }
+                            
+                            break;
+                        } catch (e) {
+                            console.log('Error parsing script content:', e.message);
+                        }
+                    }
+                }
+                
+                // Last resort: clean meta description for caption
+                if (!post.caption) {
+                    const metaDesc = document.querySelector('meta[property="og:description"]');
+                    if (metaDesc?.content) {
+                        let desc = metaDesc.content;
+                        // Remove engagement metrics and metadata
+                        desc = desc.replace(/^\d+[KMB]?\s*(likes?|comments?)[^"]*-\s*[^"]*\s*on\s*[^:]*:\s*"?/, '');
+                        desc = desc.replace(/".+$/, ''); // Remove trailing quotes and text
+                        if (desc.length > 20) {
+                            post.caption = desc.trim();
                         }
                     }
                 }
@@ -288,10 +297,10 @@ const extractPostData = async (page, contentUrl) => {
             }
             
             return post;
-        }, { url: contentUrl, isReel });
+        }, { url: contentUrl, isReel, shortcode, apiData });
         
-        console.log(`Extraction result for ${contentUrl}:`);
-        console.log(`- Caption found: ${postData.caption ? 'Yes' : 'No'}`);
+        console.log(`Extraction complete for ${contentUrl}:`);
+        console.log(`- Caption: ${postData.caption ? 'Found (' + postData.caption.length + ' chars)' : 'Not found'}`);
         console.log(`- Media: ${postData.images.length} images, ${postData.videos.length} videos`);
         console.log(`- Engagement: ${postData.likesCount} likes, ${postData.commentsCount} comments, ${postData.viewCount} views`);
         
@@ -303,28 +312,27 @@ const extractPostData = async (page, contentUrl) => {
     }
 };
 
-// Helper function to extract comments from the specific post
+// Helper function to extract comments
 const extractComments = async (page, maxComments) => {
     try {
+        // Look for comment data in intercepted API responses or DOM
         const comments = await page.evaluate((maxComments) => {
             const comments = [];
             
-            // Look for comments specifically within the main article
-            const mainContent = document.querySelector('main article, article');
-            if (mainContent) {
-                const commentElements = mainContent.querySelectorAll('ul li, div[role="button"]');
+            // Try to find comments in the page
+            const commentElements = document.querySelectorAll('article ul li, [role="article"] div');
+            
+            for (let i = 0; i < Math.min(commentElements.length, maxComments); i++) {
+                const element = commentElements[i];
+                const text = element.textContent?.trim();
                 
-                for (let i = 0; i < Math.min(commentElements.length, maxComments); i++) {
-                    const element = commentElements[i];
-                    const text = element.textContent?.trim();
-                    
-                    // Only include if it looks like a comment (has reasonable length, not just numbers)
-                    if (text && text.length > 10 && text.length < 500 && !text.match(/^\d+\s*(like|comment|view)/)) {
-                        comments.push({
-                            text: text,
-                            position: i + 1
-                        });
-                    }
+                if (text && text.length > 15 && text.length < 300 && 
+                    !text.includes('like') && !text.includes('reply') && 
+                    !text.match(/^\d+/)) {
+                    comments.push({
+                        text: text,
+                        position: i + 1
+                    });
                 }
             }
             
@@ -338,7 +346,7 @@ const extractComments = async (page, maxComments) => {
     }
 };
 
-// Helper function to get posts from profile (simplified)
+// Helper function to get posts from profile
 const getProfilePosts = async (page, username, maxPosts) => {
     const profileUrl = `https://www.instagram.com/${username}/`;
     
@@ -347,7 +355,6 @@ const getProfilePosts = async (page, username, maxPosts) => {
         await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(5000);
         
-        // Extract post and reel URLs
         const contentUrls = await page.evaluate(() => {
             const links = [];
             const anchors = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
@@ -401,23 +408,19 @@ const crawler = new PlaywrightCrawler({
         
         try {
             if (url.includes('/p/') || url.includes('/reel/')) {
-                // Handle individual post or reel
                 const postData = await extractPostData(page, url);
                 
                 if (postData) {
-                    // Apply date filters if specified
                     if (dateFrom || dateTo) {
                         const postDate = new Date(postData.timestamp);
                         if (dateFrom && postDate < new Date(dateFrom)) return;
                         if (dateTo && postDate > new Date(dateTo)) return;
                     }
                     
-                    // Extract comments if requested
                     if (includeComments) {
                         postData.comments = await extractComments(page, maxCommentsPerPost);
                     }
                     
-                    // Filter data based on user preferences
                     if (!includeHashtags) delete postData.hashtags;
                     if (!includeMentions) delete postData.mentions;
                     if (!includeLocation) {
@@ -436,13 +439,11 @@ const crawler = new PlaywrightCrawler({
                     log.info(`Successfully scraped ${postData.isReel ? 'reel' : 'post'}: ${url}`);
                 }
             } else {
-                // Handle profile page
                 const username = url.replace('https://www.instagram.com/', '').replace('/', '');
                 const contentUrls = await getProfilePosts(page, username, maxPostsPerProfile);
                 
                 log.info(`Found ${contentUrls.length} content items for ${username}`);
                 
-                // Add content URLs to request queue
                 for (const contentUrl of contentUrls) {
                     await crawler.addRequests([{ url: contentUrl }]);
                 }
@@ -460,7 +461,6 @@ const crawler = new PlaywrightCrawler({
 // Add initial requests
 const initialRequests = [];
 
-// Add username-based requests (profile pages)
 for (const username of usernames) {
     if (username.trim()) {
         const profileUrl = `https://www.instagram.com/${username.trim()}/`;
@@ -468,7 +468,6 @@ for (const username of usernames) {
     }
 }
 
-// Add direct post/reel URLs
 for (const contentUrl of postUrls) {
     if (contentUrl.trim() && (contentUrl.includes('/p/') || contentUrl.includes('/reel/'))) {
         initialRequests.push({ url: contentUrl.trim() });
