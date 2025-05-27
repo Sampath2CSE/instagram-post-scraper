@@ -1,4 +1,4 @@
-// main.js - Instagram Post Scraper
+// main.js - Instagram Post Scraper (Enhanced Version)
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { chromium } from 'playwright';
@@ -35,660 +35,269 @@ const {
 // Initialize dataset for storing results
 const dataset = await Dataset.open();
 
-// Helper function to extract post/reel data
+// Helper function to extract comprehensive post/reel data
 const extractPostData = async (page, contentUrl) => {
     try {
-        // Wait for content to load and check if page loaded properly
+        console.log(`Starting extraction for: ${contentUrl}`);
+        
+        // Wait for page to load and check for content
         await page.waitForTimeout(3000);
         
-        // Check if we hit a login wall or error page
-        const loginCheck = await page.$('input[name="username"], div:has-text("Log in"), div:has-text("Sign up")');
-        if (loginCheck) {
-            console.log('Hit login wall, trying to continue anyway...');
-            await page.waitForTimeout(2000);
+        // Check if we can access the content
+        const loginWall = await page.$('input[name="username"], div:has-text("Log in")');
+        if (loginWall) {
+            console.log('Login wall detected, may affect data quality');
         }
         
-        // Wait for main content
-        try {
-            await page.waitForSelector('main, article', { timeout: 10000 });
-        } catch (e) {
-            console.log('Main content not found, proceeding with extraction...');
-        }
-        
-        // Determine if this is a reel or regular post
         const isReel = contentUrl.includes('/reel/');
         
-        const postData = await page.evaluate(({ url, isReel }) => {
-            const post = {};
+        // Extract all data in browser context for better performance
+        const postData = await page.evaluate(async ({ url, isReel }) => {
+            const post = {
+                url,
+                isReel,
+                shortcode: isReel ? url.split('/reel/')[1]?.split('/')[0] : url.split('/p/')[1]?.split('/')[0],
+                type: isReel ? 'reel' : 'image',
+                images: [],
+                videos: [],
+                hashtags: [],
+                mentions: [],
+                likesCount: 0,
+                commentsCount: 0,
+                viewCount: 0,
+                caption: '',
+                ownerUsername: '',
+                timestamp: '',
+                locationName: '',
+                locationId: ''
+            };
             
-            // Basic information
-            post.url = url;
-            post.isReel = isReel;
-            
-            if (isReel) {
-                post.shortcode = url.split('/reel/')[1]?.split('/')[0] || '';
-                post.type = 'reel';
-            } else {
-                post.shortcode = url.split('/p/')[1]?.split('/')[0] || '';
-            }
-            
-            // Try multiple approaches to get clean caption (without engagement metrics)
-            let caption = '';
-            
-            // Method 1: Search in page scripts for clean caption first (most reliable)
-            const scripts = document.querySelectorAll('script');
-            for (const script of scripts) {
-                if (script.textContent && script.textContent.includes('"edge_media_to_caption"')) {
-                    try {
-                        // Look for the actual caption in Instagram's JSON data
-                        const captionMatch = script.textContent.match(/"edge_media_to_caption":\s*{\s*"edges":\s*\[\s*{\s*"node":\s*{\s*"text":\s*"([^"]+)"/);
-                        if (captionMatch && captionMatch[1]) {
-                            caption = captionMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-                            break;
-                        }
-                    } catch (e) {
-                        // Continue searching
-                    }
-                }
+            // Function to extract number from text with K/M/B support
+            function parseNumber(text) {
+                if (!text) return 0;
+                const cleanText = text.replace(/[,\s]/g, '').toLowerCase();
+                const match = cleanText.match(/(\d+(?:\.\d+)?)(k|m|b)?/);
+                if (!match) return 0;
                 
-                // Also try simpler caption patterns
-                if (!caption && script.textContent && script.textContent.includes('"caption"')) {
-                    try {
-                        const simpleCaptionMatch = script.textContent.match(/"caption":\s*"([^"]+)"/);
-                        if (simpleCaptionMatch && simpleCaptionMatch[1] && 
-                            simpleCaptionMatch[1] !== 'Contact Uploading & Non-Users' &&
-                            simpleCaptionMatch[1].length > 5) {
-                            caption = simpleCaptionMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-                            break;
-                        }
-                    } catch (e) {
-                        // Continue searching
-                    }
-                }
-            }
-            
-            // Method 2: Clean caption from metadata and user info
-            if (caption) {
-                // Remove username and verification badges from caption
-                caption = caption.replace(/^[a-zA-Z0-9_.]+(?:Verified)?\s*\d+[wdhmy]\s*/i, '');
-                // Remove trailing metadata
-                caption = caption.replace(/\s*\d+[wdhmy]\s*$/, '');
-                // Remove "Contact Uploading & Non-Users" text
-                if (caption.includes('Contact Uploading & Non-Users')) {
-                    caption = '';
-                }
-            }
-            if (!caption) {
-                const captionSelectors = [
-                    'article div[data-testid="post-text"] span',
-                    'article h1',
-                    'span[dir="auto"]:not([aria-label]):not([role="button"])',
-                    'article span:not([aria-label*="like"]):not([aria-label*="comment"]):not([aria-label*="view"])'
-                ];
+                let num = parseFloat(match[1]);
+                const suffix = match[2];
+                if (suffix === 'k') num *= 1000;
+                else if (suffix === 'm') num *= 1000000;
+                else if (suffix === 'b') num *= 1000000000;
                 
-                for (const selector of captionSelectors) {
-                    const elements = document.querySelectorAll(selector);
-                    for (const element of elements) {
-                        const text = element.textContent?.trim();
-                        if (text && 
-                            text.length > 15 && 
-                            !text.match(/^\d+[KMB]?\s*(like|comment|view)/i) && // Exclude engagement text
-                            !text.match(/^\d+,\d+/) && // Exclude comma-separated numbers
-                            !text.includes('•') && // Exclude metadata
-                            !text.includes(' on ') && // Exclude date strings
-                            (text.includes('#') || text.includes('@') || text.split(' ').length > 3)) { // Likely caption
-                            caption = text;
-                            break;
-                        }
-                    }
-                    if (caption) break;
-                }
+                return Math.floor(num);
             }
             
-            // Method 3: Clean meta description as last resort
-            if (!caption) {
-                const metaDesc = document.querySelector('meta[property="og:description"]');
-                if (metaDesc) {
-                    let metaText = metaDesc.getAttribute('content') || '';
-                    // Remove engagement metrics and metadata from meta description
-                    metaText = metaText.replace(/^\d+[KMB]?\s*(likes?|comments?|views?)[^"]*"\s*-\s*/i, '');
-                    metaText = metaText.replace(/^\d+,\d+[^-]*-\s*/i, '');
-                    metaText = metaText.replace(/\s*on\s+(Instagram|May|June|July|August|September|October|November|December)\s+\d+.*$/i, '');
-                    metaText = metaText.replace(/^[^"]*"\s*-\s*/, ''); // Remove quoted usernames
-                    if (metaText && metaText.length > 10) {
-                        caption = metaText.trim().replace(/^"|"$/g, ''); // Remove surrounding quotes
-                    }
-                }
-            }
-            
-            post.caption = caption;
-            
-            // Extract hashtags and mentions from caption
-            if (caption) {
-                post.hashtags = [...new Set((caption.match(/#[a-zA-Z0-9_]+/g) || []).map(h => h.toLowerCase()))];
-                post.mentions = [...new Set((caption.match(/@[a-zA-Z0-9_.]+/g) || []).map(m => m.toLowerCase()))];
-            } else {
-                post.hashtags = [];
-                post.mentions = [];
-            }
-            
-            // Get post owner information - more reliable extraction
-            let ownerUsername = '';
-            
-            // Method 1: Extract from URL pattern
-            const urlParts = url.split('/');
-            const urlIndex = urlParts.findIndex(part => part === 'p' || part === 'reel');
-            if (urlIndex > 0) {
-                // Look backwards in URL for username
-                for (let i = urlIndex - 1; i >= 0; i--) {
-                    if (urlParts[i] && urlParts[i] !== 'www.instagram.com' && urlParts[i] !== 'instagram.com' && urlParts[i] !== '') {
-                        ownerUsername = urlParts[i];
-                        break;
-                    }
-                }
-            }
-            
-            // Method 2: Look for username in JSON data
-            if (!ownerUsername) {
-                for (const script of scripts) {
-                    if (script.textContent && script.textContent.includes('"username"')) {
-                        try {
-                            const usernameMatch = script.textContent.match(/"username":\s*"([^"]+)"/);
-                            if (usernameMatch && usernameMatch[1] && !usernameMatch[1].includes('instagram')) {
-                                ownerUsername = usernameMatch[1];
-                                break;
-                            }
-                        } catch (e) {
-                            // Continue searching
-                        }
-                    }
-                }
-            }
-            
-            // Method 3: Look in DOM elements
-            if (!ownerUsername) {
-                const ownerSelectors = [
-                    'article a[role="link"]',
-                    'header a[href^="/"]',
-                    'main article a[href^="/"]'
-                ];
-                
-                for (const selector of ownerSelectors) {
-                    const ownerLink = document.querySelector(selector);
-                    if (ownerLink) {
-                        const href = ownerLink.getAttribute('href');
-                        if (href && href.startsWith('/') && !href.includes('/p/') && !href.includes('/reel/')) {
-                            const username = href.replace('/', '').split('/')[0];
-                            if (username && username.length > 0) {
-                                ownerUsername = username;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            post.ownerUsername = ownerUsername;
-            
-            // Extract engagement metrics with better number parsing
-            let likeCount = 0;
-            let commentCount = 0;
-            let viewCount = 0;
-            
-            // Method 1: Try to extract from JSON data first (most accurate)
-            for (const script of scripts) {
-                if (script.textContent && script.textContent.includes('edge_media_preview_like')) {
-                    try {
-                        // Extract likes from JSON
-                        const likeMatch = script.textContent.match(/"edge_media_preview_like":\s*{\s*"count":\s*(\d+)/);
-                        if (likeMatch && likeMatch[1]) {
-                            likeCount = parseInt(likeMatch[1]);
-                        }
-                        
-                        // Extract comments from JSON
-                        const commentMatch = script.textContent.match(/"edge_media_to_parent_comment":\s*{\s*"count":\s*(\d+)/);
-                        if (commentMatch && commentMatch[1]) {
-                            commentCount = parseInt(commentMatch[1]);
-                        }
-                        
-                        // Extract views from JSON (for reels/videos)
-                        if (isReel) {
-                            const viewPatterns = [
-                                /"video_view_count":\s*(\d+)/,
-                                /"play_count":\s*(\d+)/,
-                                /"view_count":\s*(\d+)/
-                            ];
-                            
-                            for (const pattern of viewPatterns) {
-                                const viewMatch = script.textContent.match(pattern);
-                                if (viewMatch && viewMatch[1]) {
-                                    viewCount = parseInt(viewMatch[1]);
-                                    break;
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        // Continue to DOM parsing
-                    }
+            // Extract owner username from URL
+            const urlParts = url.split('/').filter(p => p);
+            for (let i = 0; i < urlParts.length; i++) {
+                if ((urlParts[i] === 'p' || urlParts[i] === 'reel') && i > 0) {
+                    post.ownerUsername = urlParts[i - 1];
                     break;
                 }
             }
             
-            // Method 2: DOM-based extraction if JSON method failed
-            if (likeCount === 0 || commentCount === 0 || (isReel && viewCount === 0)) {
-                const buttons = document.querySelectorAll('button, span, div, section');
-                
-                for (const element of buttons) {
-                    const ariaLabel = element.getAttribute('aria-label') || '';
-                    const text = element.textContent || '';
-                    const title = element.getAttribute('title') || '';
-                    const combinedText = (ariaLabel + ' ' + text + ' ' + title).toLowerCase();
-                    
-                    // Parse likes with better number handling
-                    if (likeCount === 0 && (combinedText.includes('like') && !combinedText.includes('unlike'))) {
-                        const likeMatch = combinedText.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*[kmb]?\s*like/i);
-                        if (likeMatch) {
-                            likeCount = parseEngagementNumber(likeMatch[1]);
+            // Get page HTML content for pattern matching
+            const pageContent = document.documentElement.innerHTML;
+            
+            // Extract data from Instagram's JSON (most reliable method)
+            const scripts = document.querySelectorAll('script[type="application/json"], script:not([type])');
+            let jsonData = null;
+            
+            for (const script of scripts) {
+                const content = script.textContent || script.innerHTML;
+                if (content && content.includes('graphql') && content.includes('shortcode_media')) {
+                    try {
+                        // Try to find and parse Instagram's JSON data
+                        const dataMatch = content.match(/{"data":{"shortcode_media":{[^}]+.*?}}}(?=<|\s|$)/);
+                        if (dataMatch) {
+                            jsonData = JSON.parse(dataMatch[0]);
+                            break;
                         }
-                    }
-                    
-                    // Parse comments with better number handling
-                    if (commentCount === 0 && combinedText.includes('comment')) {
-                        const commentMatch = combinedText.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*[kmb]?\s*comment/i);
-                        if (commentMatch) {
-                            commentCount = parseEngagementNumber(commentMatch[1]);
-                        }
-                    }
-                    
-                    // Parse views for reels with better number handling
-                    if (isReel && viewCount === 0 && (combinedText.includes('view') || combinedText.includes('play'))) {
-                        const viewMatch = combinedText.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*[kmb]?\s*(?:view|play)/i);
-                        if (viewMatch) {
-                            viewCount = parseEngagementNumber(viewMatch[1]);
-                        }
+                    } catch (e) {
+                        console.log('JSON parsing failed, continuing...');
                     }
                 }
             }
             
-            // Method 3: Search page text for reels view count if still not found
-            if (isReel && viewCount === 0) {
-                const pageText = document.body.textContent || '';
-                const viewPatterns = [
-                    /(\d+(?:,\d+)*(?:\.\d+)?)\s*[kmb]?\s*views?/gi,
-                    /(\d+(?:,\d+)*(?:\.\d+)?)\s*[kmb]?\s*plays?/gi
-                ];
+            // Extract from JSON data if available
+            if (jsonData && jsonData.data && jsonData.data.shortcode_media) {
+                const media = jsonData.data.shortcode_media;
                 
-                for (const pattern of viewPatterns) {
-                    const matches = pageText.match(pattern);
-                    if (matches && matches.length > 0) {
-                        // Take the first reasonable number found
-                        for (const match of matches) {
-                            const numberMatch = match.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*[kmb]?/i);
-                            if (numberMatch && numberMatch[1]) {
-                                const parsedNumber = parseEngagementNumber(numberMatch[1]);
-                                if (parsedNumber > 10) { // Ignore very small numbers that might be false positives
-                                    viewCount = parsedNumber;
-                                    break;
-                                }
-                            }
-                        }
-                        if (viewCount > 0) break;
-                    }
-                }
-            }
-            
-            // Helper function to parse engagement numbers correctly
-            function parseEngagementNumber(numStr) {
-                if (!numStr) return 0;
-                
-                // Remove commas and convert to lowercase for processing
-                let cleanNum = numStr.replace(/,/g, '').toLowerCase().trim();
-                
-                // Handle K, M, B suffixes
-                if (cleanNum.includes('k')) {
-                    return Math.floor(parseFloat(cleanNum.replace('k', '')) * 1000);
-                } else if (cleanNum.includes('m')) {
-                    return Math.floor(parseFloat(cleanNum.replace('m', '')) * 1000000);
-                } else if (cleanNum.includes('b')) {
-                    return Math.floor(parseFloat(cleanNum.replace('b', '')) * 1000000000);
-                } else {
-                    return parseInt(cleanNum) || 0;
-                }
-            }
-            
-            post.likesCount = likeCount;
-            post.commentsCount = commentCount;
-            post.viewCount = viewCount;
-            
-            // Extract media information with reel-specific selectors
-            const images = [];
-            const videos = [];
-            
-            if (isReel) {
-                // Reel-specific video selectors with better detection
-                const reelVideoSelectors = [
-                    'video[playsinline]',
-                    'div[role="button"] video',
-                    'article video',
-                    'main video',
-                    'video[src]',
-                    'video source'
-                ];
-                
-                // Method 1: Try JSON data extraction for video URLs
-                for (const script of scripts) {
-                    if (script.textContent && script.textContent.includes('"video_url"')) {
-                        try {
-                            const videoMatches = script.textContent.match(/"video_url":\s*"([^"]+)"/g);
-                            if (videoMatches) {
-                                for (const match of videoMatches) {
-                                    const urlMatch = match.match(/"video_url":\s*"([^"]+)"/);
-                                    if (urlMatch && urlMatch[1]) {
-                                        const cleanUrl = urlMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
-                                        videos.push({
-                                            url: cleanUrl,
-                                            source: 'script',
-                                            quality: 'high'
-                                        });
-                                    }
-                                }
-                            }
-                        } catch (e) {
-                            // Continue to DOM extraction
-                        }
-                        if (videos.length > 0) break;
-                    }
+                // Caption
+                if (media.edge_media_to_caption && media.edge_media_to_caption.edges.length > 0) {
+                    post.caption = media.edge_media_to_caption.edges[0].node.text || '';
                 }
                 
-                // Method 2: DOM-based video extraction if script method failed
-                if (videos.length === 0) {
-                    for (const selector of reelVideoSelectors) {
-                        const videoElements = document.querySelectorAll(selector);
-                        for (const video of videoElements) {
-                            const videoUrl = video.src || video.querySelector('source')?.src;
-                            if (videoUrl && videoUrl.startsWith('blob:') === false) {
-                                videos.push({
-                                    url: videoUrl,
-                                    poster: video.poster || '',
-                                    duration: video.duration || 0,
-                                    width: video.videoWidth || video.width,
-                                    height: video.videoHeight || video.height,
-                                    source: 'dom'
-                                });
-                            }
-                        }
-                        if (videos.length > 0) break;
-                    }
+                // Engagement metrics
+                post.likesCount = media.edge_media_preview_like?.count || 0;
+                post.commentsCount = media.edge_media_to_parent_comment?.count || 0;
+                if (isReel && media.video_view_count) {
+                    post.viewCount = media.video_view_count;
                 }
                 
-                post.type = 'reel';
-            } else {
-                // Regular post image/video extraction with more aggressive approach
-                
-                // Method 1: Try to find images in JSON data first (most reliable for carousel posts)
-                let foundImages = false;
-                for (const script of scripts) {
-                    if (script.textContent && script.textContent.includes('edge_sidecar_to_children')) {
-                        try {
-                            // Look for carousel/sidecar posts with multiple images
-                            const sidecarMatch = script.textContent.match(/"edge_sidecar_to_children":\s*{\s*"edges":\s*\[([^\]]+)\]/);
-                            if (sidecarMatch) {
-                                const edges = sidecarMatch[1];
-                                const displayUrls = edges.match(/"display_url":\s*"([^"]+)"/g);
-                                if (displayUrls) {
-                                    for (const match of displayUrls) {
-                                        const urlMatch = match.match(/"display_url":\s*"([^"]+)"/);
-                                        if (urlMatch && urlMatch[1]) {
-                                            const cleanUrl = urlMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
-                                            if ((cleanUrl.includes('scontent') || cleanUrl.includes('cdninstagram')) && !cleanUrl.includes('s150x150')) {
-                                                images.push({
-                                                    url: cleanUrl,
-                                                    alt: '',
-                                                    source: 'carousel',
-                                                    quality: 'high'
-                                                });
-                                                foundImages = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (e) {
-                            // Continue searching
-                        }
-                    }
-                    
-                    // Also look for single post display_url if carousel not found
-                    if (!foundImages && script.textContent.includes('display_url')) {
-                        try {
-                            const urlMatches = script.textContent.match(/"display_url":\s*"([^"]+)"/g);
-                            if (urlMatches) {
-                                for (const match of urlMatches) {
-                                    const urlMatch = match.match(/"display_url":\s*"([^"]+)"/);
-                                    if (urlMatch && urlMatch[1]) {
-                                        const cleanUrl = urlMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
-                                        if ((cleanUrl.includes('scontent') || cleanUrl.includes('cdninstagram')) && !cleanUrl.includes('s150x150')) {
-                                            images.push({
-                                                url: cleanUrl,
-                                                alt: '',
-                                                source: 'script',
-                                                quality: 'high'
-                                            });
-                                            foundImages = true;
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (e) {
-                            // Continue searching
-                        }
-                    }
-                    if (foundImages) break;
+                // Timestamp
+                if (media.taken_at_timestamp) {
+                    post.timestamp = new Date(media.taken_at_timestamp * 1000).toISOString();
                 }
                 
-                // Method 2: Try more aggressive DOM-based image extraction
-                if (!foundImages) {
-                    const allImageSelectors = [
-                        'article img[src*="scontent"]',
-                        'article img[src*="cdninstagram"]', 
-                        'div[role="button"] img[src*="scontent"]',
-                        'main img[src*="scontent"]',
-                        'img[style*="object-fit"][src*="scontent"]',
-                        'article div img[src*="instagram"]',
-                        'img[src*="scontent"]:not([src*="s150x150"])',
-                        'img[src*="cdninstagram"]:not([src*="profile"])',
-                        'img[srcset*="scontent"]',
-                        '[style*="background-image"][style*="scontent"]'
-                    ];
-                    
-                    for (const selector of allImageSelectors) {
-                        const imgElements = document.querySelectorAll(selector);
-                        for (const img of imgElements) {
-                            let imgUrl = '';
-                            
-                            // Try different ways to get image URL
-                            if (img.src && (img.src.includes('scontent') || img.src.includes('cdninstagram'))) {
-                                imgUrl = img.src;
-                            } else if (img.srcset) {
-                                // Extract highest quality from srcset
-                                const srcsetUrls = img.srcset.split(',').map(s => s.trim().split(' ')[0]);
-                                imgUrl = srcsetUrls.find(url => url.includes('scontent') || url.includes('cdninstagram')) || '';
-                            } else if (img.style && img.style.backgroundImage) {
-                                const bgMatch = img.style.backgroundImage.match(/url\(['"]?([^'"]+)['"]?\)/);
-                                if (bgMatch && bgMatch[1]) {
-                                    imgUrl = bgMatch[1];
-                                }
-                            }
-                            
-                            if (imgUrl && 
-                                !imgUrl.includes('profile') && 
-                                !imgUrl.includes('story') &&
-                                !imgUrl.includes('s150x150') && 
-                                !imgUrl.includes('s240x240') &&
-                                (img.naturalWidth > 300 || img.width > 300 || imgUrl.includes('1080'))) {
-                                
-                                images.push({
-                                    url: imgUrl,
-                                    alt: img.alt || '',
-                                    width: img.naturalWidth || img.width || 0,
-                                    height: img.naturalHeight || img.height || 0,
-                                    source: 'dom'
-                                });
-                                foundImages = true;
-                            }
-                        }
-                        if (foundImages) break;
-                    }
+                // Owner
+                if (media.owner && media.owner.username) {
+                    post.ownerUsername = media.owner.username;
                 }
                 
-                // Method 3: Background image extraction as fallback
-                if (!foundImages) {
-                    const bgElements = document.querySelectorAll('div[style*="background-image"], span[style*="background-image"]');
-                    for (const el of bgElements) {
-                        const style = el.getAttribute('style');
-                        const urlMatch = style.match(/background-image:\s*url\(['"]?([^'"]+)['"]?\)/);
-                        if (urlMatch && urlMatch[1] && 
-                            (urlMatch[1].includes('scontent') || urlMatch[1].includes('cdninstagram')) &&
-                            !urlMatch[1].includes('s150x150')) {
-                            images.push({
-                                url: urlMatch[1],
-                                alt: '',
-                                source: 'background'
+                // Location
+                if (media.location) {
+                    post.locationName = media.location.name || '';
+                    post.locationId = media.location.id || '';
+                }
+                
+                // Media URLs
+                if (media.display_url) {
+                    post.images.push({
+                        url: media.display_url,
+                        width: media.dimensions?.width || 0,
+                        height: media.dimensions?.height || 0,
+                        source: 'json'
+                    });
+                }
+                
+                if (media.video_url) {
+                    post.videos.push({
+                        url: media.video_url,
+                        width: media.dimensions?.width || 0,
+                        height: media.dimensions?.height || 0,
+                        source: 'json'
+                    });
+                }
+                
+                // Carousel images
+                if (media.edge_sidecar_to_children) {
+                    for (const edge of media.edge_sidecar_to_children.edges) {
+                        const node = edge.node;
+                        if (node.display_url) {
+                            post.images.push({
+                                url: node.display_url,
+                                width: node.dimensions?.width || 0,
+                                height: node.dimensions?.height || 0,
+                                source: 'carousel'
                             });
-                            foundImages = true;
                         }
-                    }
-                }
-                
-                // Method 4: Extract all images if still nothing found and filter later
-                if (!foundImages) {
-                    const allImages = document.querySelectorAll('img');
-                    for (const img of allImages) {
-                        if (img.src && 
-                            (img.src.includes('scontent') || img.src.includes('cdninstagram')) &&
-                            !img.src.includes('profile') && 
-                            !img.src.includes('story') &&
-                            img.width > 200 && img.height > 200) {
-                            
-                            images.push({
-                                url: img.src,
-                                alt: img.alt || '',
-                                width: img.naturalWidth || img.width,
-                                height: img.naturalHeight || img.height,
-                                source: 'fallback'
+                        if (node.video_url) {
+                            post.videos.push({
+                                url: node.video_url,
+                                width: node.dimensions?.width || 0,
+                                height: node.dimensions?.height || 0,
+                                source: 'carousel'
                             });
                         }
                     }
                 }
-                
-                // Check for videos in regular posts
-                const videoElements = document.querySelectorAll('article video, main video');
-                for (const video of videoElements) {
-                    const videoUrl = video.src || video.querySelector('source')?.src;
-                    if (videoUrl) {
-                        videos.push({
-                            url: videoUrl,
-                            poster: video.poster || '',
-                            duration: video.duration || 0,
-                            width: video.videoWidth || video.width,
-                            height: video.videoHeight || video.height
+            }
+            
+            // Fallback: Extract from page content using regex patterns
+            if (!post.caption) {
+                // Try meta description
+                const metaDesc = document.querySelector('meta[property="og:description"]');
+                if (metaDesc) {
+                    let desc = metaDesc.getAttribute('content') || '';
+                    // Clean meta description
+                    desc = desc.replace(/^\d+[KMB]?\s*(likes?|followers?|following)[^"]*"/i, '');
+                    desc = desc.replace(/^[^"]*"\s*-\s*/, '');
+                    desc = desc.replace(/\s*on Instagram.*$/, '');
+                    if (desc.length > 10) {
+                        post.caption = desc.trim();
+                    }
+                }
+            }
+            
+            // Extract hashtags and mentions from caption
+            if (post.caption) {
+                post.hashtags = [...new Set((post.caption.match(/#[a-zA-Z0-9_]+/g) || []).map(h => h.toLowerCase()))];
+                post.mentions = [...new Set((post.caption.match(/@[a-zA-Z0-9_.]+/g) || []).map(m => m.toLowerCase()))];
+            }
+            
+            // Fallback media extraction from DOM if JSON failed
+            if (post.images.length === 0 && post.videos.length === 0) {
+                // Try to find images
+                const imageElements = document.querySelectorAll('img');
+                for (const img of imageElements) {
+                    if (img.src && 
+                        (img.src.includes('scontent') || img.src.includes('cdninstagram')) &&
+                        !img.src.includes('profile') &&
+                        !img.src.includes('s150x150') &&
+                        img.naturalWidth > 400) {
+                        post.images.push({
+                            url: img.src,
+                            width: img.naturalWidth,
+                            height: img.naturalHeight,
+                            source: 'dom'
                         });
                     }
                 }
                 
-                // Determine post type
-                if (videos.length > 0) {
-                    post.type = videos.length === 1 ? 'video' : 'carousel_video';
-                } else if (images.length > 1) {
-                    post.type = 'carousel_album';
-                } else {
-                    post.type = 'image';
-                }
-            }
-            
-            // Remove duplicates and ensure we have actual URLs
-            post.images = [...new Map(images.map(img => [img.url, img])).values()].slice(0, 10);
-            post.videos = [...new Map(videos.map(vid => [vid.url, vid])).values()].slice(0, 5);
-            
-            // Debug logging
-            console.log(`Debug - Found ${post.images.length} images, ${post.videos.length} videos for ${isReel ? 'reel' : 'post'}`);
-            if (post.images.length > 0) {
-                console.log('Sample image URL:', post.images[0].url.substring(0, 80) + '...');
-            }
-            if (post.videos.length > 0) {
-                console.log('Sample video URL:', post.videos[0].url.substring(0, 80) + '...');
-            }
-            
-            // Extract timestamp more reliably
-            let timestamp = '';
-            
-            // Method 1: Look in JSON data for timestamp
-            for (const script of scripts) {
-                if (script.textContent && script.textContent.includes('"taken_at_timestamp"')) {
-                    try {
-                        const timestampMatch = script.textContent.match(/"taken_at_timestamp":\s*(\d+)/);
-                        if (timestampMatch && timestampMatch[1]) {
-                            timestamp = new Date(parseInt(timestampMatch[1]) * 1000).toISOString();
-                            break;
-                        }
-                    } catch (e) {
-                        // Continue searching
+                // Try to find videos
+                const videoElements = document.querySelectorAll('video');
+                for (const video of videoElements) {
+                    if (video.src && !video.src.startsWith('blob:')) {
+                        post.videos.push({
+                            url: video.src,
+                            width: video.videoWidth || 0,
+                            height: video.videoHeight || 0,
+                            source: 'dom'
+                        });
                     }
                 }
             }
             
-            // Method 2: Look for datetime attributes in DOM
-            if (!timestamp) {
-                const timeElements = document.querySelectorAll('time[datetime], time[title], [datetime]');
-                for (const timeEl of timeElements) {
-                    const datetime = timeEl.getAttribute('datetime') || timeEl.getAttribute('title');
-                    if (datetime && datetime.includes('T')) {
-                        timestamp = datetime;
-                        break;
+            // Fallback engagement extraction from page text
+            if (post.likesCount === 0 || post.commentsCount === 0 || (isReel && post.viewCount === 0)) {
+                const pageText = document.body.textContent || '';
+                
+                // Extract likes
+                const likeMatches = pageText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*likes?/gi);
+                if (likeMatches && post.likesCount === 0) {
+                    post.likesCount = parseNumber(likeMatches[0]);
+                }
+                
+                // Extract comments
+                const commentMatches = pageText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*comments?/gi);
+                if (commentMatches && post.commentsCount === 0) {
+                    post.commentsCount = parseNumber(commentMatches[0]);
+                }
+                
+                // Extract views for reels
+                if (isReel && post.viewCount === 0) {
+                    const viewMatches = pageText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/gi);
+                    if (viewMatches) {
+                        post.viewCount = parseNumber(viewMatches[0]);
                     }
                 }
             }
             
-            post.timestamp = timestamp;
-            
-            // Extract location if available
-            const locationSelectors = [
-                'a[href*="/explore/locations/"]',
-                'div[data-testid="location"]'
-            ];
-            
-            for (const selector of locationSelectors) {
-                const locationElement = document.querySelector(selector);
-                if (locationElement) {
-                    post.locationName = locationElement.textContent?.trim();
-                    const href = locationElement.getAttribute('href');
-                    if (href) {
-                        const locationId = href.match(/\/explore\/locations\/(\d+)/)?.[1];
-                        if (locationId) {
-                            post.locationId = locationId;
-                        }
-                    }
-                    break;
-                }
+            // Determine post type
+            if (isReel) {
+                post.type = 'reel';
+            } else if (post.videos.length > 0) {
+                post.type = post.videos.length === 1 ? 'video' : 'carousel_video';
+            } else if (post.images.length > 1) {
+                post.type = 'carousel_album';
+            } else {
+                post.type = 'image';
             }
             
             return post;
         }, { url: contentUrl, isReel });
         
-        // Log what we found for debugging
-        console.log(`Extracted ${isReel ? 'reel' : 'post'} data:`, {
-            url: postData.url,
-            type: postData.type,
-            isReel: postData.isReel,
-            caption: postData.caption ? `${postData.caption.substring(0, 50)}...` : 'No caption',
-            likesCount: postData.likesCount,
-            commentsCount: postData.commentsCount,
-            viewCount: postData.viewCount,
-            imagesCount: postData.images?.length || 0,
-            videosCount: postData.videos?.length || 0
-        });
+        // Log extraction results
+        console.log(`Extraction complete for ${contentUrl}:`);
+        console.log(`- Caption: ${postData.caption ? 'Found' : 'Missing'}`);
+        console.log(`- Images: ${postData.images.length}`);
+        console.log(`- Videos: ${postData.videos.length}`);
+        console.log(`- Likes: ${postData.likesCount}, Comments: ${postData.commentsCount}, Views: ${postData.viewCount}`);
         
         return postData;
+        
     } catch (error) {
         console.log(`Error extracting data from ${contentUrl}:`, error.message);
         return null;
@@ -697,41 +306,30 @@ const extractPostData = async (page, contentUrl) => {
 
 // Helper function to extract comments
 const extractComments = async (page, maxComments) => {
-    const comments = [];
-    
     try {
-        // Look for comment sections
-        const commentSelectors = [
-            'article ul li div[data-testid="comment"]',
-            'article div[role="button"] span[dir="auto"]',
-            'article ul li span'
-        ];
-        
-        let commentElements = [];
-        for (const selector of commentSelectors) {
-            commentElements = await page.$$(selector);
-            if (commentElements.length > 0) break;
-        }
-        
-        for (let i = 0; i < Math.min(commentElements.length, maxComments); i++) {
-            const element = commentElements[i];
-            const commentText = await element.textContent();
-            const usernameElement = await element.$('a');
-            const username = usernameElement ? await usernameElement.textContent() : '';
+        const comments = await page.evaluate((maxComments) => {
+            const commentElements = document.querySelectorAll('article ul li, [role="button"] span');
+            const comments = [];
             
-            if (commentText && commentText.trim()) {
-                comments.push({
-                    text: commentText.trim(),
-                    username: username.trim(),
-                    position: i + 1
-                });
+            for (let i = 0; i < Math.min(commentElements.length, maxComments); i++) {
+                const element = commentElements[i];
+                const text = element.textContent?.trim();
+                if (text && text.length > 5 && !text.includes('like') && !text.includes('reply')) {
+                    comments.push({
+                        text: text,
+                        position: i + 1
+                    });
+                }
             }
-        }
+            
+            return comments;
+        }, maxComments);
+        
+        return comments;
     } catch (error) {
         console.log('Error extracting comments:', error.message);
+        return [];
     }
-    
-    return comments;
 };
 
 // Helper function to get posts AND reels from profile
@@ -739,113 +337,32 @@ const getProfilePosts = async (page, username, maxPosts) => {
     const profileUrl = `https://www.instagram.com/${username}/`;
     
     try {
-        await page.goto(profileUrl, { waitUntil: 'networkidle' });
-        
-        // Wait for the page to load and try multiple selectors
+        console.log(`Loading profile: ${profileUrl}`);
+        await page.goto(profileUrl, { waitUntil: 'networkidle', timeout: 30000 });
         await page.waitForTimeout(3000);
         
-        // Modern Instagram uses different selectors for posts and reels
-        const contentSelectors = [
-            'article a[href*="/p/"]',        // Regular posts
-            'article a[href*="/reel/"]',     // Reels
-            'a[href*="/p/"][role="link"]',   // Posts with role
-            'a[href*="/reel/"][role="link"]', // Reels with role
-            'div[role="button"] a[href*="/p/"]', // Posts in buttons
-            'div[role="button"] a[href*="/reel/"]', // Reels in buttons
-            'main a[href*="/p/"]',           // Posts in main
-            'main a[href*="/reel/"]'         // Reels in main
-        ];
-        
-        let contentLinks = [];
-        
-        // Try each selector
-        for (const selector of contentSelectors) {
-            try {
-                await page.waitForSelector(selector, { timeout: 5000 });
-                const links = await page.$$eval(selector, elements => 
-                    elements.map(el => el.href).filter(href => 
-                        href && (href.includes('/p/') || href.includes('/reel/'))
-                    )
-                );
-                if (links.length > 0) {
-                    contentLinks = [...new Set([...contentLinks, ...links])];
-                    console.log(`Found ${links.length} content items using selector: ${selector}`);
+        // Extract post and reel URLs
+        const contentUrls = await page.evaluate(() => {
+            const links = [];
+            const anchors = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
+            
+            for (const anchor of anchors) {
+                const href = anchor.getAttribute('href');
+                if (href && (href.includes('/p/') || href.includes('/reel/'))) {
+                    const fullUrl = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+                    links.push(fullUrl);
                 }
-            } catch (e) {
-                console.log(`Selector ${selector} failed: ${e.message}`);
-                continue;
-            }
-        }
-        
-        // If no content found with selectors, try alternative method
-        if (contentLinks.length === 0) {
-            console.log('No content found with selectors, trying alternative method...');
-            
-            // Scroll to load content
-            for (let i = 0; i < 3; i++) {
-                await page.evaluate(() => window.scrollBy(0, 1000));
-                await page.waitForTimeout(2000);
             }
             
-            // Extract URLs from page content
-            const pageContent = await page.content();
-            const postMatches = pageContent.match(/\/(p|reel)\/[A-Za-z0-9_-]+/g);
-            if (postMatches) {
-                contentLinks = [...new Set(postMatches.map(match => `https://www.instagram.com${match}/`))];
-                console.log(`Found ${contentLinks.length} content items from page content`);
-            }
-        }
+            return [...new Set(links)];
+        });
         
-        // Additional scroll to load more content if needed
-        if (contentLinks.length > 0 && contentLinks.length < maxPosts) {
-            let scrollAttempts = 0;
-            const maxScrollAttempts = 5;
-            
-            while (contentLinks.length < maxPosts && scrollAttempts < maxScrollAttempts) {
-                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                await page.waitForTimeout(3000);
-                
-                // Try to get more links
-                for (const selector of contentSelectors) {
-                    try {
-                        const newLinks = await page.$$eval(selector, elements => 
-                            elements.map(el => el.href).filter(href => 
-                                href && (href.includes('/p/') || href.includes('/reel/'))
-                            )
-                        );
-                        contentLinks = [...new Set([...contentLinks, ...newLinks])];
-                    } catch (e) {
-                        // Continue to next selector
-                    }
-                }
-                
-                scrollAttempts++;
-            }
-        }
+        console.log(`Found ${contentUrls.length} content URLs on profile`);
+        return contentUrls.slice(0, maxPosts);
         
-        return contentLinks.slice(0, maxPosts);
     } catch (error) {
-        console.log(`Error getting content from profile ${username}:`, error.message);
-        
-        // Try a direct approach with page evaluation
-        try {
-            const contentLinks = await page.evaluate(() => {
-                const links = [];
-                const anchors = document.querySelectorAll('a');
-                anchors.forEach(anchor => {
-                    if (anchor.href && (anchor.href.includes('/p/') || anchor.href.includes('/reel/'))) {
-                        links.push(anchor.href);
-                    }
-                });
-                return [...new Set(links)];
-            });
-            
-            console.log(`Fallback method found ${contentLinks.length} content items`);
-            return contentLinks.slice(0, maxPosts);
-        } catch (fallbackError) {
-            console.log('Fallback method also failed:', fallbackError.message);
-            return [];
-        }
+        console.log(`Error loading profile ${username}:`, error.message);
+        return [];
     }
 };
 
@@ -913,11 +430,11 @@ const crawler = new PlaywrightCrawler({
                     log.info(`Successfully scraped ${postData.isReel ? 'reel' : 'post'}: ${url}`);
                 }
             } else {
-                // Handle profile page - get post AND reel URLs
+                // Handle profile page
                 const username = url.replace('https://www.instagram.com/', '').replace('/', '');
                 const contentUrls = await getProfilePosts(page, username, maxPostsPerProfile);
                 
-                log.info(`Found ${contentUrls.length} content items for ${username} (posts and reels)`);
+                log.info(`Found ${contentUrls.length} content items for ${username}`);
                 
                 // Add content URLs to request queue
                 for (const contentUrl of contentUrls) {
