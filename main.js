@@ -58,8 +58,10 @@ const extractInstagramData = (html, url) => {
 const extractProfileData = ($, html, url) => {
     console.log('Extracting profile data...');
     
-    // Try to extract JSON data from script tags
+    // Debug: Log the first few script tags to see what's available
     const scripts = $('script:not([src])');
+    console.log(`Found ${scripts.length} script tags without src`);
+    
     let profileData = null;
     let postUrls = [];
     
@@ -67,30 +69,50 @@ const extractProfileData = ($, html, url) => {
         const content = $(script).html();
         if (!content || content.length < 100) return;
         
+        // Debug: Log if we find any Instagram-related data
+        if (content.includes('window._sharedData') || content.includes('window.__additionalDataLoaded') || content.includes('"ProfilePage"')) {
+            console.log(`Script ${i}: Found Instagram data patterns`);
+        }
+        
         try {
-            // Look for profile data patterns
+            // Updated patterns for 2025
             const patterns = [
-                // Pattern 1: window._sharedData
+                // Pattern 1: Classic window._sharedData
                 /window\._sharedData\s*=\s*({.+?});/,
-                // Pattern 2: ProfilePage data
-                /"ProfilePage"[^{]*"graphql":\s*{"user":\s*({.+?})}(?=,"toast_content_on_load"|,"extensions")/,
-                // Pattern 3: User data with timeline
-                /"user":\s*({[^{}]*"edge_owner_to_timeline_media"[^{}]*{[^}]+}[^}]*})/
+                // Pattern 2: New additionalDataLoaded format
+                /window\.__additionalDataLoaded\('ProfilePage',\s*({.+?})\);/,
+                // Pattern 3: Direct GraphQL user data
+                /"graphql":\s*{"user":\s*({.+?})}(?=,"extensions"|,"toast_content_on_load"|$)/,
+                // Pattern 4: ProfilePage with nested user
+                /"ProfilePage":[^{]*"graphql":\s*{"user":\s*({.+?})}/,
+                // Pattern 5: User data in response format
+                /"data":\s*{"user":\s*({.+?})}(?=,"extensions"|$)/,
+                // Pattern 6: Modern format without ProfilePage wrapper
+                /"user":\s*({.+?"edge_owner_to_timeline_media".+?})/
             ];
             
             for (const pattern of patterns) {
                 const match = content.match(pattern);
                 if (match) {
                     try {
-                        const data = JSON.parse(match[1]);
+                        let data = JSON.parse(match[1]);
+                        console.log(`Successfully parsed JSON from pattern ${patterns.indexOf(pattern) + 1}`);
                         
                         let userData = null;
+                        
+                        // Handle different data structures
                         if (data.entry_data?.ProfilePage?.[0]?.graphql?.user) {
                             userData = data.entry_data.ProfilePage[0].graphql.user;
+                            console.log('Found userData in entry_data.ProfilePage format');
                         } else if (data.user) {
                             userData = data.user;
+                            console.log('Found userData in direct user format');
                         } else if (data.edge_owner_to_timeline_media) {
                             userData = data;
+                            console.log('Found userData in timeline format');
+                        } else if (data.graphql?.user) {
+                            userData = data.graphql.user;
+                            console.log('Found userData in graphql.user format');
                         }
                         
                         if (userData && userData.edge_owner_to_timeline_media) {
@@ -106,8 +128,11 @@ const extractProfileData = ($, html, url) => {
                             
                             profileData = userData;
                             return false; // Break the loop
+                        } else {
+                            console.log('userData found but no timeline media:', Object.keys(userData || {}));
                         }
                     } catch (parseError) {
+                        console.log(`JSON parse error for pattern ${patterns.indexOf(pattern) + 1}:`, parseError.message);
                         continue;
                     }
                 }
@@ -117,21 +142,44 @@ const extractProfileData = ($, html, url) => {
         }
     });
     
-    // Fallback: extract post URLs from DOM
+    // Enhanced DOM fallback with more selectors
     if (postUrls.length === 0) {
-        console.log('JSON extraction failed, trying DOM extraction...');
+        console.log('JSON extraction failed, trying enhanced DOM extraction...');
         
         const links = new Set();
-        $('a[href*="/p/"], a[href*="/reel/"]').each((i, element) => {
-            const href = $(element).attr('href');
-            if (href && (href.includes('/p/') || href.includes('/reel/'))) {
-                const fullUrl = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
-                links.add(fullUrl);
-            }
+        
+        // Try multiple selector strategies
+        const selectors = [
+            'a[href*="/p/"]',
+            'a[href*="/reel/"]',
+            'article a[href*="/p/"]',
+            'article a[href*="/reel/"]',
+            '[role="presentation"] a[href*="/p/"]',
+            '[role="presentation"] a[href*="/reel/"]',
+            '.x1lliihq a[href*="/p/"]',  // Common Instagram class
+            '.x1lliihq a[href*="/reel/"]'
+        ];
+        
+        selectors.forEach(selector => {
+            $(selector).each((i, element) => {
+                const href = $(element).attr('href');
+                if (href && (href.includes('/p/') || href.includes('/reel/'))) {
+                    const fullUrl = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+                    links.add(fullUrl);
+                }
+            });
         });
         
         postUrls = Array.from(links);
-        console.log(`DOM extraction found ${postUrls.length} post URLs`);
+        console.log(`Enhanced DOM extraction found ${postUrls.length} post URLs`);
+        
+        // If still no URLs, log more debug info
+        if (postUrls.length === 0) {
+            console.log('No post URLs found. Checking page structure...');
+            console.log('Total links on page:', $('a').length);
+            console.log('Links with href:', $('a[href]').length);
+            console.log('Sample hrefs:', $('a[href]').slice(0, 5).map((i, el) => $(el).attr('href')).get());
+        }
     }
     
     return { postUrls, profileData };
@@ -431,6 +479,19 @@ const crawler = new CheerioCrawler({
         log.info(`Processing: ${url}`);
         
         try {
+            // Debug: Log some basic info about the response
+            log.info(`Response body length: ${body.length}`);
+            log.info(`Title: ${$('title').text()}`);
+            
+            // Check for common Instagram blocking patterns
+            if (body.includes('Please wait a few minutes before you try again') || 
+                body.includes('Sorry, something went wrong') ||
+                body.includes('login_required') ||
+                $('title').text().includes('Login')) {
+                log.warning('Instagram may be blocking or requiring login');
+                return;
+            }
+            
             if (url.includes('/p/') || url.includes('/reel/')) {
                 // Handle individual post or reel
                 const postData = extractInstagramData(body, url);
@@ -460,13 +521,15 @@ const crawler = new CheerioCrawler({
                     
                     await dataset.pushData(postData);
                     log.info(`Successfully scraped ${postData.isReel ? 'reel' : 'post'}: ${url}`);
+                } else {
+                    log.warning(`No post data extracted from: ${url}`);
                 }
             } else {
                 // Handle profile page
                 const username = url.replace('https://www.instagram.com/', '').replace('/', '');
                 const result = extractInstagramData(body, url);
                 
-                if (result && result.postUrls) {
+                if (result && result.postUrls && result.postUrls.length > 0) {
                     const postUrls = result.postUrls.slice(0, maxPostsPerProfile);
                     log.info(`Found ${postUrls.length} content items for ${username}`);
                     
@@ -474,11 +537,21 @@ const crawler = new CheerioCrawler({
                     const requests = postUrls.map(postUrl => ({ url: postUrl }));
                     await crawler.addRequests(requests);
                 } else {
-                    log.warning(`No posts found for ${username}`);
+                    log.warning(`No posts found for ${username}. This could be due to:`);
+                    log.warning(`- Instagram blocking/rate limiting`);
+                    log.warning(`- Profile is private`);
+                    log.warning(`- Profile has no posts`);
+                    log.warning(`- Instagram changed their HTML structure`);
+                    
+                    // Log some debug info
+                    log.info(`HTML title: ${$('title').text()}`);
+                    log.info(`Body contains "ProfilePage": ${body.includes('ProfilePage')}`);
+                    log.info(`Body contains "edge_owner_to_timeline_media": ${body.includes('edge_owner_to_timeline_media')}`);
                 }
             }
         } catch (error) {
             log.error(`Error processing ${url}:`, error.message);
+            log.error(`Stack trace:`, error.stack);
         }
     },
     
