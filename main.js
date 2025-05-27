@@ -120,9 +120,10 @@ const extractPostData = async (page, contentUrl) => {
                 }
             }
             
-            // Extract from JSON data if available
+            // Extract from JSON data if available (most reliable)
             if (jsonData && jsonData.data && jsonData.data.shortcode_media) {
                 const media = jsonData.data.shortcode_media;
+                console.log('Found Instagram JSON data, extracting...');
                 
                 // Caption
                 if (media.edge_media_to_caption && media.edge_media_to_caption.edges.length > 0) {
@@ -132,8 +133,12 @@ const extractPostData = async (page, contentUrl) => {
                 // Engagement metrics
                 post.likesCount = media.edge_media_preview_like?.count || 0;
                 post.commentsCount = media.edge_media_to_parent_comment?.count || 0;
-                if (isReel && media.video_view_count) {
+                
+                // Views for reels/videos
+                if (media.video_view_count) {
                     post.viewCount = media.video_view_count;
+                } else if (media.video_play_count) {
+                    post.viewCount = media.video_play_count;
                 }
                 
                 // Timestamp
@@ -152,8 +157,9 @@ const extractPostData = async (page, contentUrl) => {
                     post.locationId = media.location.id || '';
                 }
                 
-                // Media URLs
+                // Media URLs - Single post/reel
                 if (media.display_url) {
+                    console.log('Found display_url in JSON');
                     post.images.push({
                         url: media.display_url,
                         width: media.dimensions?.width || 0,
@@ -163,6 +169,7 @@ const extractPostData = async (page, contentUrl) => {
                 }
                 
                 if (media.video_url) {
+                    console.log('Found video_url in JSON');
                     post.videos.push({
                         url: media.video_url,
                         width: media.dimensions?.width || 0,
@@ -171,8 +178,9 @@ const extractPostData = async (page, contentUrl) => {
                     });
                 }
                 
-                // Carousel images
-                if (media.edge_sidecar_to_children) {
+                // Carousel images/videos
+                if (media.edge_sidecar_to_children && media.edge_sidecar_to_children.edges) {
+                    console.log(`Found carousel with ${media.edge_sidecar_to_children.edges.length} items`);
                     for (const edge of media.edge_sidecar_to_children.edges) {
                         const node = edge.node;
                         if (node.display_url) {
@@ -193,6 +201,10 @@ const extractPostData = async (page, contentUrl) => {
                         }
                     }
                 }
+                
+                console.log(`JSON extraction complete. Images: ${post.images.length}, Videos: ${post.videos.length}`);
+            } else {
+                console.log('No Instagram JSON data found, trying alternative methods...');
             }
             
             // Fallback: Extract from page content using regex patterns
@@ -217,62 +229,189 @@ const extractPostData = async (page, contentUrl) => {
                 post.mentions = [...new Set((post.caption.match(/@[a-zA-Z0-9_.]+/g) || []).map(m => m.toLowerCase()))];
             }
             
-            // Fallback media extraction from DOM if JSON failed
+            // Enhanced fallback media extraction with more aggressive searching
             if (post.images.length === 0 && post.videos.length === 0) {
-                // Try to find images
-                const imageElements = document.querySelectorAll('img');
+                console.log('JSON method failed, trying DOM extraction...');
+                
+                // Method 1: Search for images with better patterns
+                const imageElements = document.querySelectorAll('img[src], img[data-src], [style*="background-image"]');
+                console.log(`Found ${imageElements.length} potential image elements`);
+                
                 for (const img of imageElements) {
-                    if (img.src && 
-                        (img.src.includes('scontent') || img.src.includes('cdninstagram')) &&
-                        !img.src.includes('profile') &&
-                        !img.src.includes('s150x150') &&
-                        img.naturalWidth > 400) {
+                    let imgUrl = img.src || img.getAttribute('data-src');
+                    
+                    // Also check background images
+                    if (!imgUrl && img.style.backgroundImage) {
+                        const bgMatch = img.style.backgroundImage.match(/url\(['"]?([^'"]+)['"]?\)/);
+                        if (bgMatch) imgUrl = bgMatch[1];
+                    }
+                    
+                    if (imgUrl && 
+                        (imgUrl.includes('scontent') || imgUrl.includes('cdninstagram')) &&
+                        !imgUrl.includes('profile') &&
+                        !imgUrl.includes('s150x150') &&
+                        !imgUrl.includes('44x44') &&
+                        (img.naturalWidth > 400 || imgUrl.includes('1080') || imgUrl.includes('640'))) {
+                        
                         post.images.push({
-                            url: img.src,
-                            width: img.naturalWidth,
-                            height: img.naturalHeight,
+                            url: imgUrl,
+                            width: img.naturalWidth || 0,
+                            height: img.naturalHeight || 0,
                             source: 'dom'
                         });
                     }
                 }
                 
-                // Try to find videos
-                const videoElements = document.querySelectorAll('video');
+                // Method 2: Search for videos
+                const videoElements = document.querySelectorAll('video[src], video source, [data-video-url]');
+                console.log(`Found ${videoElements.length} potential video elements`);
+                
                 for (const video of videoElements) {
-                    if (video.src && !video.src.startsWith('blob:')) {
+                    let videoUrl = video.src || video.getAttribute('data-video-url');
+                    
+                    if (!videoUrl && video.tagName === 'SOURCE') {
+                        videoUrl = video.src;
+                    }
+                    
+                    if (videoUrl && 
+                        !videoUrl.startsWith('blob:') && 
+                        !videoUrl.startsWith('data:') &&
+                        (videoUrl.includes('scontent') || videoUrl.includes('cdninstagram') || videoUrl.includes('instagram'))) {
+                        
                         post.videos.push({
-                            url: video.src,
+                            url: videoUrl,
                             width: video.videoWidth || 0,
                             height: video.videoHeight || 0,
                             source: 'dom'
                         });
                     }
                 }
-            }
-            
-            // Fallback engagement extraction from page text
-            if (post.likesCount === 0 || post.commentsCount === 0 || (isReel && post.viewCount === 0)) {
-                const pageText = document.body.textContent || '';
                 
-                // Extract likes
-                const likeMatches = pageText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*likes?/gi);
-                if (likeMatches && post.likesCount === 0) {
-                    post.likesCount = parseNumber(likeMatches[0]);
-                }
-                
-                // Extract comments
-                const commentMatches = pageText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*comments?/gi);
-                if (commentMatches && post.commentsCount === 0) {
-                    post.commentsCount = parseNumber(commentMatches[0]);
-                }
-                
-                // Extract views for reels
-                if (isReel && post.viewCount === 0) {
-                    const viewMatches = pageText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/gi);
-                    if (viewMatches) {
-                        post.viewCount = parseNumber(viewMatches[0]);
+                // Method 3: Search in page HTML for media URLs
+                if (post.images.length === 0 && post.videos.length === 0) {
+                    console.log('DOM method also failed, searching page HTML...');
+                    
+                    const htmlContent = document.documentElement.innerHTML;
+                    
+                    // Look for image URLs in the HTML
+                    const imageMatches = htmlContent.match(/https:\/\/[^"'\s]*(?:scontent|cdninstagram)[^"'\s]*\.(?:jpg|jpeg|png|webp)/gi);
+                    if (imageMatches) {
+                        console.log(`Found ${imageMatches.length} image URLs in HTML`);
+                        for (const match of imageMatches.slice(0, 10)) {
+                            if (!match.includes('s150x150') && !match.includes('profile')) {
+                                post.images.push({
+                                    url: match,
+                                    source: 'html'
+                                });
+                            }
+                        }
+                    }
+                    
+                    // Look for video URLs in the HTML
+                    const videoMatches = htmlContent.match(/https:\/\/[^"'\s]*(?:scontent|cdninstagram)[^"'\s]*\.(?:mp4|mov|webm)/gi);
+                    if (videoMatches) {
+                        console.log(`Found ${videoMatches.length} video URLs in HTML`);
+                        for (const match of videoMatches.slice(0, 5)) {
+                            post.videos.push({
+                                url: match,
+                                source: 'html'
+                            });
+                        }
                     }
                 }
+                
+                console.log(`DOM/HTML extraction complete. Images: ${post.images.length}, Videos: ${post.videos.length}`);
+            }
+            
+            // Enhanced fallback engagement extraction with better view count detection
+            if (post.likesCount === 0 || post.commentsCount === 0 || (isReel && post.viewCount === 0)) {
+                console.log('Extracting engagement from page text...');
+                
+                const pageText = document.body.textContent || '';
+                
+                // Extract likes with more patterns
+                if (post.likesCount === 0) {
+                    const likePatterns = [
+                        /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*likes?/gi,
+                        /(\d+(?:,\d+)*)\s*likes?/gi
+                    ];
+                    
+                    for (const pattern of likePatterns) {
+                        const matches = pageText.match(pattern);
+                        if (matches && matches.length > 0) {
+                            post.likesCount = parseNumber(matches[0]);
+                            if (post.likesCount > 0) break;
+                        }
+                    }
+                }
+                
+                // Extract comments with more patterns
+                if (post.commentsCount === 0) {
+                    const commentPatterns = [
+                        /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*comments?/gi,
+                        /(\d+(?:,\d+)*)\s*comments?/gi
+                    ];
+                    
+                    for (const pattern of commentPatterns) {
+                        const matches = pageText.match(pattern);
+                        if (matches && matches.length > 0) {
+                            post.commentsCount = parseNumber(matches[0]);
+                            if (post.commentsCount > 0) break;
+                        }
+                    }
+                }
+                
+                // Enhanced view count extraction for reels
+                if (isReel && post.viewCount === 0) {
+                    console.log('Searching for view count in reel...');
+                    
+                    // Try multiple view count patterns
+                    const viewPatterns = [
+                        /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views?/gi,
+                        /(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*plays?/gi,
+                        /(\d+[KMB]?)\s*views?/gi,
+                        /views?\s*(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)/gi
+                    ];
+                    
+                    for (const pattern of viewPatterns) {
+                        const matches = pageText.match(pattern);
+                        if (matches && matches.length > 0) {
+                            console.log(`Found view matches: ${matches.slice(0, 3)}`);
+                            
+                            // Try each match until we find a reasonable number
+                            for (const match of matches) {
+                                const parsed = parseNumber(match);
+                                if (parsed > 100) { // Only accept view counts > 100 to avoid false positives
+                                    post.viewCount = parsed;
+                                    console.log(`Set view count to: ${post.viewCount}`);
+                                    break;
+                                }
+                            }
+                            if (post.viewCount > 0) break;
+                        }
+                    }
+                    
+                    // Alternative: Look in specific DOM elements for reels
+                    if (post.viewCount === 0) {
+                        const viewElements = document.querySelectorAll('[aria-label*="view"], [title*="view"], span, div');
+                        for (const element of viewElements) {
+                            const text = element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || '';
+                            if (text.toLowerCase().includes('view')) {
+                                const viewMatch = text.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)/);
+                                if (viewMatch) {
+                                    const parsed = parseNumber(viewMatch[0]);
+                                    if (parsed > 100) {
+                                        post.viewCount = parsed;
+                                        console.log(`Found view count in element: ${post.viewCount}`);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                console.log(`Engagement extraction complete. Likes: ${post.likesCount}, Comments: ${post.commentsCount}, Views: ${post.viewCount}`);
             }
             
             // Determine post type
